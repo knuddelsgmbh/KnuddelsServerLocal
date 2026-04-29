@@ -6,18 +6,29 @@ type ExternalAppView = {
   appDir: string;
   parentDir: string;
   source: 'env' | 'persisted';
-  appId: string | null;
-  status: 'loaded' | 'pending' | 'error';
+  appId: string;
+  status: 'loaded' | 'no-main' | 'pending' | 'error';
   error: string | null;
 };
 
 type Status = { kind: 'idle' } | { kind: 'busy'; msg: string } | { kind: 'err'; msg: string };
 
+const APP_ID_RE = /^[a-zA-Z0-9._-]+$/;
+
+function basename(absPath: string): string {
+  const parts = absPath.replace(/[\\/]+$/, '').split(/[\\/]/);
+  return parts[parts.length - 1] ?? '';
+}
+
 export function ExternalAppsPanel() {
   const [items, setItems] = useState<ExternalAppView[]>([]);
   const [status, setStatus] = useState<Status>({ kind: 'idle' });
   const [hover, setHover] = useState(false);
-  const [manualPath, setManualPath] = useState('');
+  const [pathInput, setPathInput] = useState('');
+  const [appIdInput, setAppIdInput] = useState('');
+  // Track whether the user has manually edited the appId so we don't overwrite their input
+  // when the path changes (e.g. via picker after a manual rename).
+  const [appIdTouched, setAppIdTouched] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
@@ -36,31 +47,47 @@ export function ExternalAppsPanel() {
     });
   }, [refresh]);
 
-  const addPath = useCallback(async (p: string) => {
-    if (!p) return;
-    setStatus({ kind: 'busy', msg: `füge hinzu: ${p}` });
+  const updatePath = useCallback((p: string) => {
+    setPathInput(p);
+    if (!appIdTouched) {
+      const derived = basename(p);
+      if (APP_ID_RE.test(derived)) setAppIdInput(derived);
+    }
+  }, [appIdTouched]);
+
+  const submit = useCallback(async () => {
+    const path = pathInput.trim();
+    const appId = appIdInput.trim();
+    if (!path || !appId) {
+      setStatus({ kind: 'err', msg: 'Pfad und App-Name müssen angegeben werden.' });
+      return;
+    }
+    setStatus({ kind: 'busy', msg: `füge hinzu: ${appId} → ${path}` });
     try {
-      await postJson('/api/debug/externalApps', { path: p });
+      await postJson('/api/debug/externalApps', { path, appId });
       setStatus({ kind: 'idle' });
-      setManualPath('');
+      setPathInput('');
+      setAppIdInput('');
+      setAppIdTouched(false);
     } catch (e: any) {
       setStatus({ kind: 'err', msg: e?.message ?? String(e) });
     }
-  }, []);
+  }, [pathInput, appIdInput]);
 
   const browse = useCallback(async () => {
     setStatus({ kind: 'busy', msg: 'öffne Ordner-Dialog…' });
     try {
       const r = await postJson<{ path: string | null }>('/api/debug/pickFolder', {});
       if (r.path) {
-        await addPath(r.path);
+        updatePath(r.path);
+        setStatus({ kind: 'idle' });
       } else {
         setStatus({ kind: 'idle' });
       }
     } catch (e: any) {
       setStatus({ kind: 'err', msg: e?.message ?? String(e) });
     }
-  }, [addPath]);
+  }, [updatePath]);
 
   const remove = useCallback(async (absPath: string) => {
     setStatus({ kind: 'busy', msg: `entferne ${absPath}` });
@@ -104,15 +131,20 @@ export function ExternalAppsPanel() {
       setStatus({ kind: 'err', msg: 'Kein Pfad im Drop erkannt. Browser blockiert eventuell text/uri-list — nutze "Durchsuchen…" oder gib den Pfad manuell ein.' });
       return;
     }
-    for (const p of paths) addPath(p);
-  }, [addPath]);
+    // Drag-and-drop fills the form so the user can confirm/edit the appId.
+    updatePath(paths[0]!);
+    if (paths.length > 1) {
+      setStatus({ kind: 'err', msg: 'Mehrfach-Drop nicht unterstützt — nur der erste Pfad wurde übernommen.' });
+    }
+  }, [updatePath]);
 
   return (
     <div>
       <div className="card">
         <h3 style={{ marginTop: 0 }}>Externe App-Ordner</h3>
         <p className="small muted" style={{ marginTop: 0 }}>
-          Externe Ordner werden parallel zu <code>apps/</code> gewatched. Die App-ID kommt aus der <code>appName=</code>-Zeile in <code>app.config</code>.
+          Externe Ordner werden parallel zu <code>apps/</code> gewatched. Den App-Namen
+          (= App-ID) gibst du beim Hinzufügen an — keine <code>app.config</code> nötig.
           Hinzugefügte Pfade überleben Server-Restarts (gespeichert in <code>.test-env/external-apps.json</code>).
         </p>
 
@@ -134,19 +166,26 @@ export function ExternalAppsPanel() {
           <div style={{ fontWeight: 600, color: 'var(--text)', marginBottom: 4 }}>
             Ordner aus Finder/Explorer hier ablegen
           </div>
-          <div>oder den Ordner über den nativen Dialog auswählen</div>
+          <div>oder Pfad unten eingeben / über den Dialog auswählen</div>
         </div>
 
         <div className="row" style={{ marginTop: 8, gap: 8, alignItems: 'stretch' }}>
-          <button onClick={browse}>Durchsuchen…</button>
           <input
-            value={manualPath}
-            onChange={e => setManualPath(e.target.value)}
-            onKeyDown={e => { if (e.key === 'Enter') addPath(manualPath); }}
+            value={appIdInput}
+            onChange={e => { setAppIdInput(e.target.value); setAppIdTouched(true); }}
+            onKeyDown={e => { if (e.key === 'Enter') submit(); }}
+            placeholder="app-name"
+            style={{ width: 140 }}
+          />
+          <input
+            value={pathInput}
+            onChange={e => updatePath(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter') submit(); }}
             placeholder="/absoluter/pfad/zum/app-ordner"
             style={{ flex: 1 }}
           />
-          <button onClick={() => addPath(manualPath)} disabled={!manualPath.trim()}>Hinzufügen</button>
+          <button onClick={browse}>Durchsuchen…</button>
+          <button onClick={submit} disabled={!pathInput.trim() || !appIdInput.trim()}>Hinzufügen</button>
         </div>
 
         {status.kind === 'busy' && <p className="small muted" style={{ marginTop: 8 }}>{status.msg}</p>}
@@ -166,13 +205,19 @@ export function ExternalAppsPanel() {
 
 function ExternalRow({ it, onRemove }: { it: ExternalAppView; onRemove: () => void }) {
   const badgeColor =
-    it.status === 'loaded' ? 'var(--green)' :
-    it.status === 'error'  ? 'var(--red)' :
-    'var(--muted)';
+    it.status === 'loaded'  ? 'var(--green)'  :
+    it.status === 'error'   ? 'var(--red)'    :
+    it.status === 'no-main' ? 'var(--yellow)' :
+                              'var(--muted)';
   const badgeText =
-    it.status === 'loaded' ? `geladen: ${it.appId}` :
-    it.status === 'error'  ? 'Fehler' :
-    'pending (warte auf app.config)';
+    it.status === 'loaded'  ? `geladen: ${it.appId}` :
+    it.status === 'error'   ? 'Fehler' :
+    it.status === 'no-main' ? `${it.appId}: keine main.js gefunden` :
+                              `${it.appId}: warte auf Ordner`;
+  const hint =
+    it.status === 'no-main'
+      ? 'Der Ordner ist da, aber enthält keine main.js. Hast du den Build-Output-Ordner registriert (z.B. .../dist)?'
+      : null;
 
   return (
     <div style={{
@@ -202,6 +247,7 @@ function ExternalRow({ it, onRemove }: { it: ExternalAppView; onRemove: () => vo
         )}
       </div>
       {it.error && <div className="small" style={{ color: 'var(--red)', marginTop: 4 }}>{it.error}</div>}
+      {hint && <div className="small muted" style={{ marginTop: 4 }}>{hint}</div>}
     </div>
   );
 }

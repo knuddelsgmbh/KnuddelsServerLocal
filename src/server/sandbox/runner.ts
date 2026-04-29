@@ -12,18 +12,43 @@ export type LoadedApp = {
 
 export function loadApp(appRec: AppRecord): LoadedApp {
   const api = buildApi(appRec);
+  const logger = api.KnuddelsServer.getDefaultLogger();
+
+  // Wrap every async entry-point that takes an app-supplied callback so an
+  // exception inside the callback gets logged + scoped to this app instead
+  // of bubbling up to Node and crashing the whole test-env. Without this,
+  // a single buggy `setTimeout(...)` in a UserApp tears down the dev server.
+  const guard = <A extends any[], R>(fn: (...a: A) => R, label: string) =>
+    ((...args: A): R => {
+      try { return fn(...args); }
+      catch (err: any) {
+        logger.error(`${label} threw: ${err?.message ?? err}\n${err?.stack ?? ''}`);
+        return undefined as unknown as R;
+      }
+    });
+
+  const safeSetTimeout = (cb: (...a: any[]) => void, delay?: number, ...rest: any[]) =>
+    setTimeout(guard(cb, 'setTimeout callback'), delay, ...rest);
+  const safeSetInterval = (cb: (...a: any[]) => void, delay?: number, ...rest: any[]) =>
+    setInterval(guard(cb, 'setInterval callback'), delay, ...rest);
+  const safeQueueMicrotask = (cb: () => void) =>
+    queueMicrotask(guard(cb, 'queueMicrotask callback'));
 
   // Build the global object for the vm context.
   const sandbox: Record<string, unknown> = {
     ...api,
     console: {
-      log:   (...args: any[]) => api.KnuddelsServer.getDefaultLogger().info(...args),
-      info:  (...args: any[]) => api.KnuddelsServer.getDefaultLogger().info(...args),
-      warn:  (...args: any[]) => api.KnuddelsServer.getDefaultLogger().warn(...args),
-      error: (...args: any[]) => api.KnuddelsServer.getDefaultLogger().error(...args),
-      debug: (...args: any[]) => api.KnuddelsServer.getDefaultLogger().debug(...args),
+      log:   (...args: any[]) => logger.info(...args),
+      info:  (...args: any[]) => logger.info(...args),
+      warn:  (...args: any[]) => logger.warn(...args),
+      error: (...args: any[]) => logger.error(...args),
+      debug: (...args: any[]) => logger.debug(...args),
     },
-    setTimeout, clearTimeout, setInterval, clearInterval, queueMicrotask,
+    setTimeout: safeSetTimeout,
+    clearTimeout,
+    setInterval: safeSetInterval,
+    clearInterval,
+    queueMicrotask: safeQueueMicrotask,
     Date, JSON, Math, RegExp, Error, TypeError, RangeError, SyntaxError,
     Object, Array, String, Number, Boolean, Function, Symbol, Map, Set, WeakMap, WeakSet, Promise,
     parseInt, parseFloat, isNaN, isFinite,

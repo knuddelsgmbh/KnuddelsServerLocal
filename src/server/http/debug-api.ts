@@ -8,6 +8,7 @@ import { handleSlashCommand } from './ws-bridge.js';
 import {
   addExternalAppPath,
   listExternalTargets,
+  loadOrReload,
   removeExternalAppPath,
 } from '../watcher.js';
 import { pickFolderNative } from '../config/folder-picker.js';
@@ -238,10 +239,23 @@ export function registerDebugApi(app: Express): void {
 
   app.post('/api/debug/topicChange', (req, res) => {
     const topic = String(req.body?.topic ?? '');
+    const oldChannel = world.channelName;
+    const newChannel = String(req.body?.channelName ?? world.channelName);
     world.topic = topic;
-    world.channelName = String(req.body?.channelName ?? world.channelName);
+    world.channelName = newChannel;
     world.emitChange();
-    res.json({ ok: true });
+    // Channel-Wechsel wirkt sich auf die Auswahl der Feature-Flag-Profile in
+    // den UserApps aus (FeatureManager schaut beim onAppStart nach
+    // `featureFlags.<channelName>.dev.js`). Beim Wechsel des Namens reloaden
+    // wir daher alle geladenen Apps, damit der neue Name unmittelbar greift.
+    let reloaded = 0;
+    if (newChannel !== oldChannel) {
+      for (const appId of Array.from(world.apps.keys())) {
+        loadOrReload(appId);
+        reloaded++;
+      }
+    }
+    res.json({ ok: true, reloaded });
   });
 
   // Recent logs / chat — handy for e2e verification without WS.
@@ -322,8 +336,7 @@ export function registerDebugApi(app: Express): void {
     }
 
     const hasMain = writes.some(w => w.rel === 'main.js');
-    const hasConfig = writes.some(w => w.rel === 'app.config');
-    res.json({ ok: true, appId, fileCount: writes.length, hasMain, hasConfig });
+    res.json({ ok: true, appId, fileCount: writes.length, hasMain });
   });
 
   app.delete('/api/debug/app/:appId', (req, res) => {
@@ -344,10 +357,11 @@ export function registerDebugApi(app: Express): void {
     res.json({ items: listExternalTargets() });
   });
 
-  // Add an external app folder by absolute path.
+  // Add an external app folder by absolute path. Body: { path, appId }
   app.post('/api/debug/externalApps', (req, res) => {
     const rawPath = String(req.body?.path ?? '');
-    const r = addExternalAppPath(rawPath);
+    const rawAppId = String(req.body?.appId ?? '');
+    const r = addExternalAppPath(rawPath, rawAppId);
     if (!r.ok) return res.status(400).json({ error: r.error });
     res.json({ ok: true, item: r.view });
   });
@@ -369,6 +383,50 @@ export function registerDebugApi(app: Express): void {
       res.status(500).json({ error: err?.message ?? String(err) });
     }
   });
+
+  // Discover which channel-specific feature-flag profiles each loaded app
+  // ships in its `feature_flags/` folder. The Knuddels UserApp convention is
+  // `featureFlags.<channelName>.dev.js` / `.prod.js` plus the generic
+  // `featureFlags.dev.js` / `featureFlags.prod.js`. The UI uses this to offer
+  // a dropdown of valid channel names.
+  app.get('/api/debug/featureFlagProfiles', (_req, res) => {
+    res.json(listFeatureFlagProfiles());
+  });
+}
+
+function listFeatureFlagProfiles(): {
+  channels: string[];
+  perApp: Record<string, { channels: string[]; hasGenericDev: boolean; hasGenericProd: boolean }>;
+} {
+  const allChannels = new Set<string>();
+  const perApp: Record<string, { channels: string[]; hasGenericDev: boolean; hasGenericProd: boolean }> = {};
+  for (const app of world.apps.values()) {
+    const ffDir = path.join(app.appDir, 'feature_flags');
+    let entries: string[];
+    try { entries = fs.readdirSync(ffDir); }
+    catch { perApp[app.appId] = { channels: [], hasGenericDev: false, hasGenericProd: false }; continue; }
+    const channels: string[] = [];
+    let hasGenericDev = false;
+    let hasGenericProd = false;
+    for (const f of entries) {
+      if (f === 'featureFlags.dev.js') { hasGenericDev = true; continue; }
+      if (f === 'featureFlags.prod.js') { hasGenericProd = true; continue; }
+      const m = /^featureFlags\.(.+?)\.(dev|prod)\.js$/.exec(f);
+      if (m && m[1]) {
+        channels.push(m[1]);
+        allChannels.add(m[1]);
+      }
+    }
+    perApp[app.appId] = {
+      channels: Array.from(new Set(channels)).sort((a, b) => a.localeCompare(b)),
+      hasGenericDev,
+      hasGenericProd,
+    };
+  }
+  return {
+    channels: Array.from(allChannels).sort((a, b) => a.localeCompare(b)),
+    perApp,
+  };
 }
 
 function makePrivateMessage(author: any, text: string, receivers: any[]): any {

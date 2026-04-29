@@ -74,7 +74,13 @@ function AppsTab() {
   if (!selected) {
     return (
       <div className="card">
-        <p className="muted">Keine App geladen. Lege eine App in <code>apps/&lt;app-id&gt;/</code> ab.</p>
+        <p className="muted" style={{ marginTop: 0 }}>Keine App geladen.</p>
+        <p className="small muted" style={{ marginBottom: 0 }}>
+          Entweder einen Ordner mit <code>main.js</code> unter <code>apps/&lt;app-id&gt;/</code> ablegen,
+          oder im Tab <strong>Externe Ordner</strong> einen externen App-Ordner registrieren.
+          Bei Build-Pipelines (TS / webpack) gibst du den Pfad zum Build-Output an
+          (typischerweise <code>…/dist</code>).
+        </p>
       </div>
     );
   }

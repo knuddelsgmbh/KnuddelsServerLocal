@@ -3,6 +3,22 @@ import { startWatcher } from './watcher.js';
 import { simulationRunner } from './simulation/runner.js';
 import { world } from './state/world.js';
 
+// Defense-in-depth: a buggy UserApp must never kill the dev server.
+// The sandbox's setTimeout/setInterval/queueMicrotask wrappers already catch
+// most cases per-app; this is the safety net for everything else (Promise
+// rejections, EventEmitter callbacks scheduled by library code inside the app, …).
+process.on('uncaughtException', (err) => {
+  const msg = `[uncaughtException] ${err?.stack ?? err?.message ?? String(err)}`;
+  console.error(msg);
+  world.log({ ts: Date.now(), appId: '__server__', level: 'fatal', msg });
+});
+process.on('unhandledRejection', (reason) => {
+  const err = reason instanceof Error ? reason : new Error(String(reason));
+  const msg = `[unhandledRejection] ${err.stack ?? err.message}`;
+  console.error(msg);
+  world.log({ ts: Date.now(), appId: '__server__', level: 'fatal', msg });
+});
+
 startHttpServer();
 startWatcher();
 

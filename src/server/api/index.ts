@@ -212,9 +212,45 @@ export function buildApi(appRec: AppRecord) {
     };
   }
 
+  // ============================== Profile photo URLs ==============================
+  // Stable per-user random avatar so the same user keeps the same picture
+  // across reloads. Humans get a Pravatar photo (1..70 deterministic by id),
+  // bots get a Bottts illustration. Apps that hit `user.getProfilePhoto(W,H)`
+  // see a working image URL and `hasProfilePhoto()` returns true.
+  function profilePhotoUrl(sim: SimUser, width?: number, height?: number): string {
+    const w = clampSize(width);
+    const h = clampSize(height ?? width);
+    const size = Math.max(w, h);
+    if (sim.userType === 'Human') {
+      const idx = ((sim.userId - 1) % 70 + 70) % 70 + 1;
+      return `https://i.pravatar.cc/${size}?img=${idx}`;
+    }
+    return `https://api.dicebear.com/9.x/bottts/png?seed=${encodeURIComponent(sim.nick || String(sim.userId))}&size=${size}`;
+  }
+  function clampSize(n: number | undefined): number {
+    const v = Math.round(Number(n) || 300);
+    if (!Number.isFinite(v) || v <= 0) return 300;
+    return Math.min(2000, Math.max(16, v));
+  }
+
   // ============================== User / BotUser ==============================
+  // Real prototype-bearing constructors so apps can extend the User class via
+  // `User.prototype.foo = function() { ... }` (a common pattern in Knuddels
+  // apps — see e.g. crash-userapp's addCrashKnuddelMethods which patches
+  // `getBalanceWithCrashKnuddel`, `addCrashKnuddelAmount`, etc.).
+  // Direct construction is forbidden by the public API contract — apps must
+  // obtain User instances via UserAccess / event payloads, never via `new User`.
+  function User(this: any) { throw new Error('User cannot be constructed directly'); }
+  function BotUser(this: any) { throw new Error('BotUser cannot be constructed directly'); }
+  // BotUser extends User per the typings (knuddels-userapp-backend-api.d.ts:656),
+  // so prototype patches on User flow through to bot instances too.
+  BotUser.prototype = Object.create(User.prototype);
+  BotUser.prototype.constructor = BotUser;
+
   function makeUser(sim: SimUser): any {
-    const user: any = {
+    const proto = sim.userType === 'Human' ? User.prototype : BotUser.prototype;
+    const user: any = Object.create(proto);
+    Object.assign(user, {
       getUserId: () => sim.userId,
       getNick: () => sim.nick,
       getAge: () => sim.age,
@@ -227,9 +263,9 @@ export function buildApi(appRec: AppRecord) {
       getRegDate: () => new Date(Date.now() - 1000 * 60 * 60 * 24 * 30),
       getLastOnlineTime: () => new Date(),
       getProfileLink: (text?: string) => `°@${sim.nick}|${text ?? sim.nick}°`,
-      getProfilePhoto: () => '',
-      hasProfilePhoto: () => false,
-      isProfilePhotoVerified: () => false,
+      getProfilePhoto: (width?: number, height?: number) => profilePhotoUrl(sim, width, height),
+      hasProfilePhoto: () => true,
+      isProfilePhotoVerified: () => true,
       getReadme: () => '',
       isOnline: () => sim.isInChannel,
       isOnlineInChannel: () => sim.isInChannel,
@@ -284,7 +320,7 @@ export function buildApi(appRec: AppRecord) {
       exists: () => true,
       __sim: sim,
       __isBot: sim.userType !== 'Human',
-    };
+    });
     if (sim.userType !== 'Human') {
       user.sendPublicMessage = (text: string) => {
         world.chat({ ts: Date.now(), appId, kind: 'public', fromUserId: sim.userId, text });
@@ -1071,8 +1107,19 @@ export function buildApi(appRec: AppRecord) {
     getFullImagePath: (img: string) => `/app/${appId}/${img}`,
     getFullSystemImagePath: (img: string) => `/__system/${img}`,
     listFiles: (subPath: string) => {
+      // Returns immediate file children of `<appDir>/<subPath>`, each formatted
+      // as `<subPath>/<filename>` (forward-slash, posix-style). This matches
+      // what real apps expect: e.g. FeatureManager builds candidate paths via
+      // string concat (`'feature_flags/' + 'featureFlags.dev.js'`) and checks
+      // `new Set(SERVER.listFiles('feature_flags')).has(<candidate>)` — that
+      // only works if the entries already include the sub-path prefix.
       const dir = path.join(appRec.appDir, subPath);
-      try { return fs.readdirSync(dir); } catch { return []; }
+      const cleanSub = subPath.replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
+      try {
+        return fs.readdirSync(dir, { withFileTypes: true })
+          .filter(e => e.isFile())
+          .map(e => cleanSub ? `${cleanSub}/${e.name}` : e.name);
+      } catch { return []; }
     },
     execute: (fileName: string) => {
       // Loaded files are tracked by sandbox/require.ts via the same context.
@@ -1084,9 +1131,28 @@ export function buildApi(appRec: AppRecord) {
     getPerformanceStats: () => [],
   };
 
+  // ============================== Knuddels-injected free globals ==============================
+  // The real chat server exposes a few bare globals that aren't part of any
+  // module — apps reference them via `// @ts-ignore` and bare `Mixpanel.X(...)`.
+  // We provide a permissive no-op proxy so `Mixpanel.updateUserProfile`,
+  // `Mixpanel.trackEvent`, etc. (or any future method) resolve without
+  // throwing `ReferenceError: Mixpanel is not defined`. Apps that gate calls
+  // behind `!IS_TEST_SYSTEM` (computed from `chatServerInfo.isTestSystem()`,
+  // which is `true` here) won't invoke these no-ops anyway; the proxy is
+  // there so the bare identifier resolves at evaluation time.
+  const Mixpanel: any = new Proxy({}, {
+    get: (_t, prop) => {
+      if (prop === Symbol.toPrimitive || prop === 'then') return undefined;
+      return (...args: any[]) => {
+        Logger.debug(`[Mixpanel] ${String(prop)} (no-op in test-env)`, ...args.slice(0, 2));
+      };
+    },
+  });
+
   // ============================== final globals bag ==============================
   return {
     KnuddelsServer,
+    Mixpanel,
     AppContent, AppContentSession: function() {} as any,
     HTMLFile, AppViewMode, ClientType, Gender, GenderDetailed, UserType,
     Color, KnuddelAmount, KnuddelTransferDisplayType,
@@ -1094,9 +1160,11 @@ export function buildApi(appRec: AppRecord) {
     ChannelJoinPermission, ToplistDisplayType,
     UserPersistenceNumbers, UserPersistenceStrings, UserPersistenceObjects,
     RandomOperations, Dice, DiceConfigurationFactory,
-    // Constructable types referenced as bare globals in app code:
-    User: function User() { throw new Error('User cannot be constructed directly'); } as any,
-    BotUser: function BotUser() { throw new Error('BotUser cannot be constructed directly'); } as any,
+    // User / BotUser are real prototype-bearing constructors so apps can
+    // extend them via `User.prototype.foo = ...`; their instances are
+    // produced by makeUser() and inherit through Object.create(proto).
+    User: User as any,
+    BotUser: BotUser as any,
     Channel: function Channel() { throw new Error('Channel cannot be constructed'); } as any,
     Message: function Message() { throw new Error('Message cannot be constructed'); } as any,
     PublicMessage: function PublicMessage() { throw new Error(); } as any,

@@ -101,13 +101,12 @@ export function AppDropzone() {
     }
     setStatus({ kind: 'busy', msg: `lade ${pending.files.length} Datei(en) hoch…` });
     try {
-      const r = await postJson<{ ok: boolean; fileCount: number; hasMain: boolean; hasConfig: boolean }>(
+      const r = await postJson<{ ok: boolean; fileCount: number; hasMain: boolean }>(
         '/api/debug/uploadApp',
         { appId, files: pending.files, replace },
       );
       let msg = `${r.fileCount} Datei(en) → ${appId}`;
-      if (!r.hasMain)   msg += '  ⚠ keine main.js';
-      if (!r.hasConfig) msg += '  ⚠ keine app.config';
+      if (!r.hasMain) msg += '  ⚠ keine main.js';
       setStatus({ kind: 'ok', msg });
       setPending(null);
     } catch (e: any) {
@@ -139,7 +138,7 @@ export function AppDropzone() {
         </div>
         <div>oder klicken zum Auswählen</div>
         <div style={{ marginTop: 6, fontSize: 11 }}>
-          ein Ordner mit <code>main.js</code> + <code>app.config</code>
+          ein Ordner mit <code>main.js</code> — den App-Namen vergibst du im nächsten Schritt
         </div>
       </div>
       <input ref={fileInput}

@@ -1,6 +1,5 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { parseAppConfig } from '../config.js';
 import { safeAppId } from '../state/app-registry.js';
 
 export type ExternalAppPath = {
@@ -8,6 +7,11 @@ export type ExternalAppPath = {
   appDir: string;
   /** Absolute path of the parent dir — what chokidar actually watches so we can pick the folder up if it appears later. */
   parentDir: string;
+};
+
+export type ExternalAppEntry = ExternalAppPath & {
+  /** The appId under which the external folder will be registered. */
+  appId: string;
 };
 
 export type ValidationResult =
@@ -40,25 +44,66 @@ export function validateExternalAppPath(rawPath: string, appsRoot: string): Vali
 }
 
 /**
- * Parse KS_EXTERNAL_APPS into a list of validated, deduplicated absolute paths.
- * Invalid paths are logged and skipped (env-var bootstrap is best-effort).
+ * Best-effort: derive an appId from a folder path's basename. Used when no
+ * explicit appId was provided (env-var without `=` syntax, or legacy persisted
+ * entries pre-dating the explicit-appId schema).
  */
-export function parseExternalAppsEnv(raw: string | undefined, appsRoot: string): ExternalAppPath[] {
+export function deriveAppIdFromPath(absPath: string): string | null {
+  return safeAppId(path.basename(absPath));
+}
+
+/**
+ * Parse KS_EXTERNAL_APPS into a list of validated, deduplicated app entries.
+ *
+ * Supported piece syntaxes:
+ *   - `<path>`            → appId = basename(path)
+ *   - `<appId>=<path>`    → explicit appId
+ *
+ * Invalid pieces are logged and skipped (env-var bootstrap is best-effort).
+ */
+export function parseExternalAppsEnv(raw: string | undefined, appsRoot: string): ExternalAppEntry[] {
   if (!raw) return [];
-  const out: ExternalAppPath[] = [];
-  const seen = new Set<string>();
+  const out: ExternalAppEntry[] = [];
+  const seenDir = new Set<string>();
+  const seenId = new Set<string>();
   for (const piece of raw.split(',')) {
-    if (!piece.trim()) continue;
-    const result = validateExternalAppPath(piece, appsRoot);
+    const trimmed = piece.trim();
+    if (!trimmed) continue;
+
+    const { rawPath, explicitAppId } = splitEnvPiece(trimmed);
+    const result = validateExternalAppPath(rawPath, appsRoot);
     if (!result.ok) {
-      console.error(`[external-apps] skipping ${piece.trim()}: ${result.error}`);
+      console.error(`[external-apps] skipping ${trimmed}: ${result.error}`);
       continue;
     }
-    if (seen.has(result.value.appDir)) continue;
-    seen.add(result.value.appDir);
-    out.push(result.value);
+    const appId = explicitAppId ?? deriveAppIdFromPath(result.value.appDir);
+    if (!appId) {
+      console.error(`[external-apps] skipping ${trimmed}: cannot derive valid appId from basename (use 'appId=path' syntax)`);
+      continue;
+    }
+    if (seenDir.has(result.value.appDir)) continue;
+    if (seenId.has(appId)) {
+      console.error(`[external-apps] skipping ${trimmed}: appId '${appId}' already used by another env entry`);
+      continue;
+    }
+    seenDir.add(result.value.appDir);
+    seenId.add(appId);
+    out.push({ ...result.value, appId });
   }
   return out;
+}
+
+function splitEnvPiece(piece: string): { rawPath: string; explicitAppId: string | null } {
+  // Tolerant: only treat `=` as a separator if the LHS is a valid appId AND
+  // the RHS looks like an absolute path. This keeps Windows paths like
+  // `C:\foo\bar` working unchanged when no appId override is given.
+  const eq = piece.indexOf('=');
+  if (eq <= 0) return { rawPath: piece, explicitAppId: null };
+  const lhs = piece.slice(0, eq).trim();
+  const rhs = piece.slice(eq + 1).trim();
+  const id = safeAppId(lhs);
+  if (id && path.isAbsolute(rhs)) return { rawPath: rhs, explicitAppId: id };
+  return { rawPath: piece, explicitAppId: null };
 }
 
 function realpathOfNearestExisting(p: string): string {
@@ -73,30 +118,4 @@ function realpathOfNearestExisting(p: string): string {
     }
   }
   return p;
-}
-
-export type ReadAppIdResult =
-  | { status: 'ok'; appId: string }
-  | { status: 'no-config' }
-  | { status: 'no-name' }
-  | { status: 'invalid-name'; raw: string };
-
-/**
- * Read the appId from `<appDir>/app.config`. Looks at `appName=` first (the
- * established convention used by apps/CG/app.config and the Knuddels build
- * tooling), falls back to `name=`.
- *
- * Distinguishes "file missing" (still pending — just wait) from various
- * parse-failure modes so the UI can show a useful error instead of
- * a perpetually pending entry.
- */
-export function readAppIdFromConfig(appDir: string): ReadAppIdResult {
-  const cfgPath = path.join(appDir, 'app.config');
-  if (!fs.existsSync(cfgPath)) return { status: 'no-config' };
-  const cfg = parseAppConfig(cfgPath);
-  const raw = cfg.appName ?? cfg.name;
-  if (!raw) return { status: 'no-name' };
-  const valid = safeAppId(raw);
-  if (!valid) return { status: 'invalid-name', raw };
-  return { status: 'ok', appId: valid };
 }

@@ -22,34 +22,41 @@ eigenem Git-Repo, eigener Build-Pipeline. Du registrierst nur den Pfad, der
 Watcher zieht Änderungen live rein. Kein Kopieren, keine Symlinks, kein
 Vermischen mit dem Server-Repo.
 
+Den App-Namen (= App-ID, unter der die App im Server registriert wird) gibst
+du beim Registrieren des Pfades direkt mit an — eine `app.config` ist nicht
+mehr nötig.
+
 Drei Wege, einen Pfad zu registrieren:
 
 1. **Debug-UI → Apps-Panel → "Externen Ordner hinzufügen"**
-   Nativer Folder-Picker, Auswahl wird in `.test-env/external-apps.json`
-   persistiert und beim nächsten Start automatisch wieder eingehängt.
-2. **Env-Var `KS_EXTERNAL_APPS`** (komma-separierte absolute Pfade) —
-   ideal für Team-Setups oder CI:
+   App-Namen + Pfad eingeben (oder Ordner per Drag-&-Drop / Picker auswählen,
+   App-Name wird aus dem Ordnernamen vorgeschlagen). Auswahl wird in
+   `.test-env/external-apps.json` persistiert und beim nächsten Start
+   automatisch wieder eingehängt.
+2. **Env-Var `KS_EXTERNAL_APPS`** — komma-separiert. Pro Eintrag entweder
+   `/pfad/zur/app` (App-Name = Ordnername) oder `appname=/pfad/zur/app` für
+   einen abweichenden Namen:
    ```bash
-   KS_EXTERNAL_APPS=/Users/me/work/my-app,/Users/me/work/other-app npm run dev
+   KS_EXTERNAL_APPS=/Users/me/work/my-app,other=/Users/me/work/foo npm run dev
    ```
-3. **Direkt die JSON editieren** — `.test-env/external-apps.json`.
-
-Der App-Ordner braucht eine `app.config` mit `appName=...`; der `appName` wird
-zur App-ID, unter der die App im Server registriert wird.
+3. **Direkt die JSON editieren** — `.test-env/external-apps.json` enthält
+   ein Array `entries: [{ path, appId }, …]`.
 
 ### `apps/`-Ordner (Fallback, FTP-Style)
 
 Wer keinen externen Ordner nutzen will, kann eine App direkt unter
-`apps/<app-id>/` ablegen — wie ein FTP-Upload:
+`apps/<app-id>/` ablegen — wie ein FTP-Upload. Der Ordnername IST die App-ID:
 
 ```
 apps/
 └── meine-app/
     ├── main.js          # Server-Logik
-    ├── app.config       # Properties-Format
     └── www/
         └── index.html   # Frontend
 ```
+
+Eine `app.config` darf weiterhin liegen (z.B. mit `appName=` / `appVersion=`
+für Metadaten), wird aber nicht mehr für die Registrierung benötigt.
 
 Inhalte von `apps/` sind per `.gitignore` ausgeschlossen, der Ordner selbst
 bleibt versioniert (via `.gitkeep`).

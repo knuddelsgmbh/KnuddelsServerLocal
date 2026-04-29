@@ -5,17 +5,16 @@ import { world, AppRecord } from './state/world.js';
 import { PersistenceStore } from './persistence/store.js';
 import { parseAppConfig } from './config.js';
 import { loadApp, LoadedApp } from './sandbox/runner.js';
-import { appRegistry } from './state/app-registry.js';
+import { appRegistry, safeAppId } from './state/app-registry.js';
 import {
-  ExternalAppPath,
+  ExternalAppEntry,
   parseExternalAppsEnv,
-  readAppIdFromConfig,
   validateExternalAppPath,
 } from './config/external-apps.js';
 import {
-  loadPersistedExternalAppPaths,
-  persistExternalAppPath,
-  unpersistExternalAppPath,
+  loadPersistedExternalApps,
+  persistExternalApp,
+  unpersistExternalApp,
 } from './config/external-apps-store.js';
 
 const APPS_DIR = path.resolve('apps');
@@ -23,11 +22,11 @@ const loaded = new Map<string, LoadedApp>();
 
 export type ExternalSource = 'env' | 'persisted';
 
-type ExternalTarget = ExternalAppPath & {
+type ExternalTarget = ExternalAppEntry & {
   source: ExternalSource;
-  /** appId once successfully registered (via app.config name=). */
-  registeredAppId: string | null;
-  /** Last error encountered during registration (collision, invalid app.config, etc.). */
+  /** True once the appId has been registered in the appRegistry (folder exists, no collision). */
+  registered: boolean;
+  /** Last error encountered during registration (collision, etc.). */
   lastError: string | null;
 };
 
@@ -49,14 +48,19 @@ export function startWatcher(): void {
   for (const ext of parseExternalAppsEnv(process.env.KS_EXTERNAL_APPS, APPS_DIR)) {
     addTargetAndRegister(ext, 'env');
   }
-  for (const persisted of loadPersistedExternalAppPaths()) {
-    const result = validateExternalAppPath(persisted, APPS_DIR);
+  for (const persisted of loadPersistedExternalApps()) {
+    const result = validateExternalAppPath(persisted.path, APPS_DIR);
     if (!result.ok) {
-      console.error(`[external-apps] persisted entry invalid (${persisted}): ${result.error}`);
+      console.error(`[external-apps] persisted entry invalid (${persisted.path}): ${result.error}`);
       continue;
     }
     if (externalTargets.some(t => t.appDir === result.value.appDir)) continue;
-    addTargetAndRegister(result.value, 'persisted');
+    const appId = safeAppId(persisted.appId);
+    if (!appId) {
+      console.error(`[external-apps] persisted entry has invalid appId '${persisted.appId}' for ${persisted.path}`);
+      continue;
+    }
+    addTargetAndRegister({ ...result.value, appId }, 'persisted');
   }
 
   // 3. chokidar watching apps/ + each external parent.
@@ -92,8 +96,14 @@ export type ExternalTargetView = {
   appDir: string;
   parentDir: string;
   source: ExternalSource;
-  appId: string | null;
-  status: 'loaded' | 'pending' | 'error';
+  appId: string;
+  /**
+   * - `error`   — registration failed (e.g. appId collision)
+   * - `pending` — folder doesn't exist yet (waiting for it to appear on disk)
+   * - `no-main` — folder + appId registered, but `main.js` not found → sandbox not mounted
+   * - `loaded`  — sandbox is actually mounted and running
+   */
+  status: 'loaded' | 'no-main' | 'pending' | 'error';
   error: string | null;
 };
 
@@ -102,23 +112,38 @@ export function listExternalTargets(): ExternalTargetView[] {
     appDir: t.appDir,
     parentDir: t.parentDir,
     source: t.source,
-    appId: t.registeredAppId,
-    status: t.registeredAppId ? 'loaded' : (t.lastError ? 'error' : 'pending'),
+    appId: t.appId,
+    status:
+      t.lastError                ? 'error'   :
+      !t.registered              ? 'pending' :
+      world.apps.has(t.appId)    ? 'loaded'  :
+                                   'no-main',
     error: t.lastError,
   }));
 }
 
 export type AddResult = { ok: true; view: ExternalTargetView } | { ok: false; error: string };
 
-export function addExternalAppPath(rawPath: string): AddResult {
+export function addExternalAppPath(rawPath: string, rawAppId: string): AddResult {
+  const appId = safeAppId(rawAppId);
+  if (!appId) {
+    return { ok: false, error: 'appId is empty or contains invalid characters (allowed: a-z A-Z 0-9 . _ -)' };
+  }
   const result = validateExternalAppPath(rawPath, APPS_DIR);
   if (!result.ok) return { ok: false, error: result.error };
   if (externalTargets.some(t => t.appDir === result.value.appDir)) {
     return { ok: false, error: `already registered: ${result.value.appDir}` };
   }
+  if (externalTargets.some(t => t.appId === appId)) {
+    return { ok: false, error: `appId '${appId}' is already used by another external app` };
+  }
+  if (appRegistry.has(appId)) {
+    const existing = appRegistry.get(appId)!;
+    return { ok: false, error: `appId '${appId}' is already registered (source=${existing.source}, dir=${existing.appDir})` };
+  }
 
-  const target = addTargetAndRegister(result.value, 'persisted');
-  persistExternalAppPath(target.appDir);
+  const target = addTargetAndRegister({ ...result.value, appId }, 'persisted');
+  persistExternalApp({ path: target.appDir, appId: target.appId });
 
   // Start watching the parent if not already watched.
   const watcher = chokidarWatcher;
@@ -135,17 +160,17 @@ export type RemoveResult = { ok: true } | { ok: false; error: string };
 export function removeExternalAppPath(absPath: string): RemoveResult {
   const idx = externalTargets.findIndex(t => t.appDir === absPath);
   if (idx === -1) return { ok: false, error: `unknown external app path: ${absPath}` };
-  const target = externalTargets[idx];
+  const target = externalTargets[idx]!;
   if (target.source === 'env') {
     return { ok: false, error: `path is set via KS_EXTERNAL_APPS env var; remove it from the env to unregister` };
   }
 
-  if (target.registeredAppId) {
-    unloadApp(target.registeredAppId);
-    appRegistry.unregister(target.registeredAppId);
+  if (target.registered) {
+    unloadApp(target.appId);
+    appRegistry.unregister(target.appId);
   }
   externalTargets.splice(idx, 1);
-  unpersistExternalAppPath(target.appDir);
+  unpersistExternalApp(target.appDir);
 
   // Unwatch the parent if no remaining target uses it.
   const watcher = chokidarWatcher;
@@ -159,11 +184,11 @@ export function removeExternalAppPath(absPath: string): RemoveResult {
 
 // ---- internals ---------------------------------------------------------------
 
-function addTargetAndRegister(ext: ExternalAppPath, source: ExternalSource): ExternalTarget {
-  const target: ExternalTarget = { ...ext, source, registeredAppId: null, lastError: null };
+function addTargetAndRegister(ext: ExternalAppEntry, source: ExternalSource): ExternalTarget {
+  const target: ExternalTarget = { ...ext, source, registered: false, lastError: null };
   externalTargets.push(target);
   tryRegisterExternal(target);
-  if (target.registeredAppId) loadOrReload(target.registeredAppId);
+  if (target.registered) loadOrReload(target.appId);
   return target;
 }
 
@@ -195,22 +220,18 @@ function onFileEvent(p: string, schedule: (id: string) => void): void {
   // External target first — events under an external appDir take priority over the apps/ check.
   const ext = findExternalTarget(p);
   if (ext) {
-    if (!ext.registeredAppId) {
+    if (!ext.registered) {
       tryRegisterExternal(ext);
-      if (!ext.registeredAppId) return;
-      schedule(ext.registeredAppId);
+      if (!ext.registered) return;
+      schedule(ext.appId);
       return;
     }
     const rel = path.relative(ext.appDir, p);
     if (rel.split(path.sep)[0] === 'www') {
-      world.emit('frontend-changed', ext.registeredAppId);
+      world.emit('frontend-changed', ext.appId);
       return;
     }
-    if (rel === 'app.config') {
-      handleExternalAppConfigChange(ext, schedule);
-      return;
-    }
-    schedule(ext.registeredAppId);
+    schedule(ext.appId);
     return;
   }
 
@@ -227,8 +248,15 @@ function onFileEvent(p: string, schedule: (id: string) => void): void {
 }
 
 function onAddDir(p: string, schedule: (id: string) => void): void {
+  // External target whose folder just appeared on disk → try to register.
   for (const ext of externalTargets) {
-    if (p === ext.appDir) return;
+    if (p === ext.appDir) {
+      if (!ext.registered) {
+        tryRegisterExternal(ext);
+        if (ext.registered) schedule(ext.appId);
+      }
+      return;
+    }
   }
   const rel = path.relative(APPS_DIR, p);
   if (rel.startsWith('..') || path.isAbsolute(rel)) return;
@@ -244,11 +272,10 @@ function onAddDir(p: string, schedule: (id: string) => void): void {
 
 function onUnlinkDir(p: string): void {
   for (const ext of externalTargets) {
-    if (p === ext.appDir && ext.registeredAppId) {
-      const appId = ext.registeredAppId;
-      unloadApp(appId);
-      appRegistry.unregister(appId);
-      ext.registeredAppId = null;
+    if (p === ext.appDir && ext.registered) {
+      unloadApp(ext.appId);
+      appRegistry.unregister(ext.appId);
+      ext.registered = false;
       world.emit('external-apps-changed');
       return;
     }
@@ -280,71 +307,23 @@ function appIdFromInternalPath(p: string): string | null {
 }
 
 function tryRegisterExternal(target: ExternalTarget): void {
-  if (target.registeredAppId) return;
-  const r = readAppIdFromConfig(target.appDir);
-  if (r.status === 'no-config') {
-    target.lastError = null; // Genuinely pending — file hasn't appeared yet.
+  if (target.registered) return;
+  // The folder may not exist yet (build pending) — wait silently.
+  if (!fs.existsSync(target.appDir)) {
+    target.lastError = null;
     return;
   }
-  if (r.status === 'no-name') {
-    target.lastError = 'app.config has no `appName=` field';
-    return;
-  }
-  if (r.status === 'invalid-name') {
-    target.lastError = `app.config name='${r.raw}' is not a valid appId (allowed: a-z A-Z 0-9 . _ -)`;
-    return;
-  }
-  if (appRegistry.has(r.appId)) {
-    const existing = appRegistry.get(r.appId)!;
-    const msg = `appId '${r.appId}' already registered (source=${existing.source}, dir=${existing.appDir})`;
+  if (appRegistry.has(target.appId)) {
+    const existing = appRegistry.get(target.appId)!;
+    const msg = `appId '${target.appId}' already registered (source=${existing.source}, dir=${existing.appDir})`;
     console.error(`[app-registry] external app at ${target.appDir} skipped: ${msg}`);
     target.lastError = msg;
     return;
   }
-  appRegistry.register({ appId: r.appId, appDir: target.appDir, source: 'external' });
-  target.registeredAppId = r.appId;
+  appRegistry.register({ appId: target.appId, appDir: target.appDir, source: 'external' });
+  target.registered = true;
   target.lastError = null;
-  console.log(`[app-registry] registered external app: ${r.appId} -> ${target.appDir}`);
-  world.emit('external-apps-changed');
-}
-
-function handleExternalAppConfigChange(ext: ExternalTarget, schedule: (id: string) => void): void {
-  const r = readAppIdFromConfig(ext.appDir);
-  if (r.status !== 'ok') {
-    if (ext.registeredAppId) {
-      unloadApp(ext.registeredAppId);
-      appRegistry.unregister(ext.registeredAppId);
-      ext.registeredAppId = null;
-    }
-    ext.lastError =
-      r.status === 'no-config'   ? null :
-      r.status === 'no-name'     ? 'app.config has no `appName=` field' :
-      /* invalid-name */           `app.config name='${r.raw}' is not a valid appId (allowed: a-z A-Z 0-9 . _ -)`;
-    world.emit('external-apps-changed');
-    return;
-  }
-  if (r.appId === ext.registeredAppId) {
-    schedule(r.appId);
-    return;
-  }
-  if (ext.registeredAppId) {
-    unloadApp(ext.registeredAppId);
-    appRegistry.unregister(ext.registeredAppId);
-  }
-  if (appRegistry.has(r.appId)) {
-    const existing = appRegistry.get(r.appId)!;
-    const msg = `cannot adopt appId '${r.appId}': already registered (source=${existing.source})`;
-    console.error(`[app-registry] external app at ${ext.appDir}: ${msg}`);
-    ext.registeredAppId = null;
-    ext.lastError = msg;
-    world.emit('external-apps-changed');
-    return;
-  }
-  appRegistry.register({ appId: r.appId, appDir: ext.appDir, source: 'external' });
-  ext.registeredAppId = r.appId;
-  ext.lastError = null;
-  console.log(`[app-registry] external app re-registered: ${r.appId} -> ${ext.appDir}`);
-  schedule(r.appId);
+  console.log(`[app-registry] registered external app: ${target.appId} -> ${target.appDir}`);
   world.emit('external-apps-changed');
 }
 
@@ -356,6 +335,7 @@ function listAppDirs(): string[] {
 
 function unloadApp(appId: string): void {
   const existing = loaded.get(appId);
+  const wasMounted = world.apps.has(appId);
   if (existing) {
     // Close all open AppContent sessions first so closeListeners fire
     // while the (still-loaded) App's closures are intact.
@@ -367,6 +347,12 @@ function unloadApp(appId: string): void {
   }
   world.apps.delete(appId);
   world.emitChange();
+  // The external-apps panel mirrors the sandbox-mounted state of external
+  // entries in its status badge, so any mount/unmount of an external app
+  // needs to wake the panel up.
+  if (wasMounted && appRegistry.get(appId)?.source === 'external') {
+    world.emit('external-apps-changed');
+  }
 }
 
 export function loadOrReload(appId: string): void {
@@ -380,6 +366,8 @@ export function loadOrReload(appId: string): void {
   }
   unloadApp(appId);
 
+  // app.config is now optional — if present, its values still surface via
+  // appInfo.getAppName()/getAppVersion(). Otherwise we fall back to the appId.
   const config = parseAppConfig(path.join(appDir, 'app.config'));
   const rec: AppRecord = {
     appId,
@@ -399,4 +387,7 @@ export function loadOrReload(appId: string): void {
     world.log({ ts: Date.now(), appId, level: 'fatal', msg: `[sandbox] failed to load: ${err?.message ?? err}` });
   }
   world.emitChange();
+  if (entry.source === 'external') {
+    world.emit('external-apps-changed');
+  }
 }
