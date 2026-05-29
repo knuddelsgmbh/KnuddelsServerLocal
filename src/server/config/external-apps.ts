@@ -3,15 +3,26 @@ import * as path from 'node:path';
 import { safeAppId } from '../state/app-registry.js';
 
 export type ExternalAppPath = {
-  /** Absolute, normalized path to the external app folder. */
+  /** Absolute, normalized path to the app's repo ROOT (the folder the user registers). */
+  repoRoot: string;
+  /** Absolute path to the built artifacts — derived as `<repoRoot>/dist` — where `main.js` + `www` live. */
   appDir: string;
-  /** Absolute path of the parent dir — what chokidar actually watches so we can pick the folder up if it appears later. */
+  /** Absolute path of the parent dir — what chokidar actually watches so we can pick the `dist/` folder up once it's built. Equals `repoRoot`. */
   parentDir: string;
 };
 
 export type ExternalAppEntry = ExternalAppPath & {
   /** The appId under which the external folder will be registered. */
   appId: string;
+  /**
+   * When true ("Live Source"), the test-env spawns `ks start` + `yarn watch`
+   * for this app and serves the frontend via the dev-server proxy (HMR) while
+   * the backend rebuilds incrementally. When false/absent, the app is served
+   * frozen from the built `dist/` folder.
+   */
+  liveSource?: boolean;
+  /** Port the spawned `ks start` dev server listens on (default 3100). */
+  frontendDevPort?: number;
 };
 
 export type ValidationResult =
@@ -19,10 +30,12 @@ export type ValidationResult =
   | { ok: false; error: string };
 
 /**
- * Validate a single user-supplied path. Resolves symlinks (so it matches what
- * the OS-level watcher reports, e.g. macOS FSEvents emits /private/tmp/... not
- * /tmp/...), and walks up to the deepest existing ancestor for the realpath
- * since appDir itself may not exist yet (build hasn't run).
+ * Validate a single user-supplied path. The path is the app's REPO ROOT; the
+ * built artifacts (`main.js` + `www`) are derived as `<repoRoot>/dist`. The
+ * `dist/` folder may not exist yet (build hasn't run), so we watch the repo
+ * root itself (`parentDir`) and pick `dist/` up once it appears. Resolves
+ * symlinks so the path matches what the OS-level watcher reports (e.g. macOS
+ * FSEvents emits /private/tmp/... not /tmp/...).
  */
 export function validateExternalAppPath(rawPath: string, appsRoot: string): ValidationResult {
   const trimmed = rawPath.trim();
@@ -35,12 +48,12 @@ export function validateExternalAppPath(rawPath: string, appsRoot: string): Vali
     return { ok: false, error: `path lies under apps/ root, would cause double-watching: ${abs}` };
   }
 
-  const parent = path.dirname(abs);
-  if (!fs.existsSync(parent) || !fs.statSync(parent).isDirectory()) {
-    return { ok: false, error: `parent directory does not exist: ${parent}` };
+  if (!fs.existsSync(abs) || !fs.statSync(abs).isDirectory()) {
+    return { ok: false, error: `repo root does not exist or is not a directory: ${abs}` };
   }
 
-  return { ok: true, value: { appDir: abs, parentDir: parent } };
+  const appDir = path.join(abs, 'dist');
+  return { ok: true, value: { repoRoot: abs, appDir, parentDir: abs } };
 }
 
 /**

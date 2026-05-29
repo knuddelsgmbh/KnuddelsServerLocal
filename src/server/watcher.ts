@@ -15,7 +15,14 @@ import {
   loadPersistedExternalApps,
   persistExternalApp,
   unpersistExternalApp,
+  updatePersistedExternalApp,
 } from './config/external-apps-store.js';
+import {
+  startLiveSource,
+  stopLiveSource,
+  isLiveSourceRunning,
+  DEFAULT_FRONTEND_DEV_PORT,
+} from './dev/process-manager.js';
 
 const APPS_DIR = path.resolve('apps');
 const loaded = new Map<string, LoadedApp>();
@@ -45,8 +52,20 @@ export function startWatcher(): void {
   }
 
   // 2. External apps — env first (read-only), then persisted (mutable).
+  // A launcher (e.g. the Crash repo's `yarn start-local`) can flip every
+  // env-provided app into Live Source mode via KS_LIVE_SOURCE=1 and choose the
+  // dev-server port via KS_FRONTEND_DEV_PORT.
+  const envLiveSource = isTruthyEnv(process.env.KS_LIVE_SOURCE);
+  const envDevPort = parsePort(process.env.KS_FRONTEND_DEV_PORT);
   for (const ext of parseExternalAppsEnv(process.env.KS_EXTERNAL_APPS, APPS_DIR)) {
-    addTargetAndRegister(ext, 'env');
+    addTargetAndRegister(
+      {
+        ...ext,
+        liveSource: envLiveSource || ext.liveSource,
+        frontendDevPort: ext.frontendDevPort ?? envDevPort,
+      },
+      'env',
+    );
   }
   for (const persisted of loadPersistedExternalApps()) {
     const result = validateExternalAppPath(persisted.path, APPS_DIR);
@@ -60,7 +79,10 @@ export function startWatcher(): void {
       console.error(`[external-apps] persisted entry has invalid appId '${persisted.appId}' for ${persisted.path}`);
       continue;
     }
-    addTargetAndRegister({ ...result.value, appId }, 'persisted');
+    addTargetAndRegister(
+      { ...result.value, appId, liveSource: persisted.liveSource, frontendDevPort: persisted.frontendDevPort },
+      'persisted',
+    );
   }
 
   // 3. chokidar watching apps/ + each external parent.
@@ -143,7 +165,9 @@ export function addExternalAppPath(rawPath: string, rawAppId: string): AddResult
   }
 
   const target = addTargetAndRegister({ ...result.value, appId }, 'persisted');
-  persistExternalApp({ path: target.appDir, appId: target.appId });
+  // The store is keyed by repo ROOT (validateExternalAppPath derives dist/ from
+  // it on load), so persist repoRoot — not appDir (<root>/dist).
+  persistExternalApp({ path: target.repoRoot, appId: target.appId });
 
   // Start watching the parent if not already watched.
   const watcher = chokidarWatcher;
@@ -165,12 +189,14 @@ export function removeExternalAppPath(absPath: string): RemoveResult {
     return { ok: false, error: `path is set via KS_EXTERNAL_APPS env var; remove it from the env to unregister` };
   }
 
+  if (target.liveSource) stopLiveSource(target.appId);
+
   if (target.registered) {
     unloadApp(target.appId);
     appRegistry.unregister(target.appId);
   }
   externalTargets.splice(idx, 1);
-  unpersistExternalApp(target.appDir);
+  unpersistExternalApp(target.repoRoot);
 
   // Unwatch the parent if no remaining target uses it.
   const watcher = chokidarWatcher;
@@ -189,7 +215,78 @@ function addTargetAndRegister(ext: ExternalAppEntry, source: ExternalSource): Ex
   externalTargets.push(target);
   tryRegisterExternal(target);
   if (target.registered) loadOrReload(target.appId);
+  // Spawn the watch processes regardless of whether dist/ exists yet — `yarn
+  // watch` is what produces dist/main.js, and `ks start` serves the frontend
+  // from memory. Registration of the sandbox happens once main.js appears.
+  if (target.liveSource) {
+    startLiveSource({
+      appId: target.appId,
+      repoRoot: target.repoRoot,
+      devPort: target.frontendDevPort ?? DEFAULT_FRONTEND_DEV_PORT,
+    });
+  }
   return target;
+}
+
+/**
+ * Toggle "Live Source" for an already-registered external app at runtime.
+ *
+ * The toggle only flips the *routing* (proxy → dev server vs. static `dist/`).
+ * The watch processes (`ks start` + `yarn watch`) are started lazily on the
+ * first enable and then kept **warm** — switching back to LIVE is instant, with
+ * no reboot/"booting…" flash. They're torn down only when the app is removed
+ * (`removeExternalAppPath`) or the server shuts down (`stopAllLiveSource`).
+ *
+ * The choice is persisted (for `persisted` apps) so it survives a restart;
+ * `env` apps are read-only and reset to their env value on the next launch.
+ */
+export type SetLiveSourceResult = { ok: true; liveSource: boolean } | { ok: false; error: string };
+
+export function setLiveSource(appId: string, enabled: boolean): SetLiveSourceResult {
+  const target = externalTargets.find(t => t.appId === appId);
+  if (!target) {
+    return { ok: false, error: `Live Source is only available for external app folders (unknown appId '${appId}')` };
+  }
+  if (!target.repoRoot) {
+    return { ok: false, error: `app '${appId}' has no repo root — cannot run \`ks start\` / \`yarn watch\`` };
+  }
+  if (target.liveSource === enabled) return { ok: true, liveSource: enabled };
+
+  target.liveSource = enabled;
+  const entry = appRegistry.get(appId);
+  if (entry) entry.liveSource = enabled;
+
+  // Boot the watch processes once, on first enable. Never kill them on disable
+  // — keeping them warm is what makes toggling back to LIVE instant.
+  if (enabled && !isLiveSourceRunning(appId)) {
+    startLiveSource({
+      appId,
+      repoRoot: target.repoRoot,
+      devPort: target.frontendDevPort ?? DEFAULT_FRONTEND_DEV_PORT,
+    });
+  }
+
+  // Persist the choice for user-registered apps (env apps are read-only).
+  if (target.source === 'persisted') {
+    updatePersistedExternalApp(target.repoRoot, { liveSource: enabled });
+  }
+
+  // Reload the iframes to reflect the new source. On the very first enable the
+  // dev server may still be booting — the frame shows "booting…" until the
+  // readiness probe fires a second reload. Once warm, both directions are instant.
+  world.emit('frontend-changed', appId);
+  world.emitChange();
+  return { ok: true, liveSource: enabled };
+}
+
+function isTruthyEnv(v: string | undefined): boolean {
+  if (!v) return false;
+  return ['1', 'true', 'yes', 'on'].includes(v.trim().toLowerCase());
+}
+
+function parsePort(v: string | undefined): number | undefined {
+  const n = Number(v);
+  return Number.isInteger(n) && n > 0 && n < 65536 ? n : undefined;
 }
 
 function isParentWatched(parentDir: string, ignoreTarget: ExternalTarget | null): boolean {
@@ -320,7 +417,14 @@ function tryRegisterExternal(target: ExternalTarget): void {
     target.lastError = msg;
     return;
   }
-  appRegistry.register({ appId: target.appId, appDir: target.appDir, source: 'external' });
+  appRegistry.register({
+    appId: target.appId,
+    appDir: target.appDir,
+    source: 'external',
+    repoRoot: target.repoRoot,
+    liveSource: target.liveSource,
+    frontendDevPort: target.frontendDevPort,
+  });
   target.registered = true;
   target.lastError = null;
   console.log(`[app-registry] registered external app: ${target.appId} -> ${target.appDir}`);

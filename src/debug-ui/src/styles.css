@@ -94,6 +94,10 @@ th { color: var(--muted); font-weight: 600; font-size: 11px; text-transform: upp
 .muted { color: var(--muted); }
 .small { font-size: 12px; }
 
+.live-toggle { font-size: 11px; padding: 2px 8px; border-radius: 999px; line-height: 1.6; }
+.live-toggle.on  { background: rgba(74, 222, 128, 0.15); color: var(--green); border-color: rgba(74, 222, 128, 0.4); }
+.live-toggle.off { background: var(--panel-2); color: var(--muted); }
+
 .toolbar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 .spacer { flex: 1; }
 

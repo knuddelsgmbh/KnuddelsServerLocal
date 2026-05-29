@@ -5,6 +5,8 @@ import * as path from 'node:path';
 import { world } from '../state/world.js';
 import { appRegistry } from '../state/app-registry.js';
 import { clientShimSource } from './client-shim.js';
+import { handleDevProxy } from './dev-proxy.js';
+import { DEFAULT_FRONTEND_DEV_PORT } from '../dev/process-manager.js';
 import { attachWsServer } from './ws-bridge.js';
 import { registerDebugApi } from './debug-api.js';
 import { registerSimulationApi } from '../simulation/api.js';
@@ -21,6 +23,17 @@ export function startHttpServer(): void {
     const appId = req.params.appId;
     const rec = world.apps.get(appId);
     if (!rec) return res.status(404).send('app not loaded');
+
+    // Live Source apps: serve the frontend from the `ks start` dev server (HMR)
+    // instead of the built dist/www, injecting the local Client shim.
+    const entry = appRegistry.get(appId);
+    if (entry?.liveSource) {
+      return handleDevProxy(req, res, {
+        appId,
+        rec,
+        devPort: entry.frontendDevPort ?? DEFAULT_FRONTEND_DEV_PORT,
+      });
+    }
 
     const appDir = appRegistry.getAppDir(appId);
     if (!appDir) return res.status(404).send('app not loaded');

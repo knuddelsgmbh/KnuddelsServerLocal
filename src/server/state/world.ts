@@ -1,5 +1,6 @@
 import { EventEmitter } from 'node:events';
 import { PersistenceStore } from '../persistence/store.js';
+import { appRegistry } from './app-registry.js';
 
 export type SimUser = {
   userId: number;
@@ -165,12 +166,19 @@ class World extends EventEmitter {
       topic: this.topic,
       defaultBotUserId: this.defaultBotUserId,
       users: Array.from(this.users.values()),
-      apps: Array.from(this.apps.values()).map(a => ({
-        appId: a.appId,
-        appDir: a.appDir,
-        config: a.config,
-        sessions: Array.from(a.sessions.values()),
-      })),
+      apps: Array.from(this.apps.values()).map(a => {
+        const reg = appRegistry.get(a.appId);
+        return {
+          appId: a.appId,
+          appDir: a.appDir,
+          config: a.config,
+          sessions: Array.from(a.sessions.values()),
+          // Whether the app is currently served live (ks start + yarn watch)
+          // vs frozen from dist/. Only external apps with a repo root can.
+          liveSource: reg?.liveSource ?? false,
+          liveSourceAvailable: reg?.source === 'external' && !!reg.repoRoot,
+        };
+      }),
     };
   }
 }

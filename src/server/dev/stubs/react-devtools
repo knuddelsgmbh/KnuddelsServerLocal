@@ -1,0 +1,4 @@
+#!/bin/sh
+# No-op stub (see react-devtools.cmd for why). Prepended to the spawned ks PATH
+# so `ks start`'s unconditional `react-devtools` spawn resolves and exits cleanly.
+exit 0

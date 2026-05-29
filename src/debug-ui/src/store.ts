@@ -31,6 +31,10 @@ export type AppSnap = {
   appDir: string;
   config: Record<string, string>;
   sessions: AppContentSpec[];
+  /** App is currently served live (ks start + yarn watch) vs frozen from dist/. */
+  liveSource: boolean;
+  /** Whether Live Source can be toggled (external app with a repo root). */
+  liveSourceAvailable: boolean;
 };
 
 export type Snapshot = {

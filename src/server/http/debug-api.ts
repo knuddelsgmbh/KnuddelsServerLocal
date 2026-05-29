@@ -10,6 +10,7 @@ import {
   listExternalTargets,
   loadOrReload,
   removeExternalAppPath,
+  setLiveSource,
 } from '../watcher.js';
 import { pickFolderNative } from '../config/folder-picker.js';
 
@@ -379,6 +380,19 @@ export function registerDebugApi(app: Express): void {
     const r = addExternalAppPath(rawPath, rawAppId);
     if (!r.ok) return res.status(400).json({ error: r.error });
     res.json({ ok: true, item: r.view });
+  });
+
+  // Toggle "Live Source" for an external app at runtime.
+  // Body: { appId: string, enabled: boolean }
+  app.post('/api/debug/liveSource', (req, res) => {
+    const appId = safeAppId(String(req.body?.appId ?? ''));
+    if (!appId) return res.status(400).json({ error: 'invalid or missing appId' });
+    if (typeof req.body?.enabled !== 'boolean') {
+      return res.status(400).json({ error: 'enabled (boolean) required' });
+    }
+    const r = setLiveSource(appId, req.body.enabled);
+    if (!r.ok) return res.status(400).json({ error: r.error });
+    res.json({ ok: true, liveSource: r.liveSource });
   });
 
   // Remove an external app folder. Body: { path: string }

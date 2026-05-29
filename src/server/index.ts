@@ -2,6 +2,7 @@ import { startHttpServer } from './http/server.js';
 import { startWatcher } from './watcher.js';
 import { simulationRunner } from './simulation/runner.js';
 import { world } from './state/world.js';
+import { stopAllLiveSource } from './dev/process-manager.js';
 
 // Defense-in-depth: a buggy UserApp must never kill the dev server.
 // The sandbox's setTimeout/setInterval/queueMicrotask wrappers already catch
@@ -45,6 +46,8 @@ let shuttingDown = false;
 function shutdown(signal: NodeJS.Signals): void {
   if (shuttingDown) return;
   shuttingDown = true;
+  try { stopAllLiveSource(); }
+  catch (e) { console.error('[shutdown] stopAllLiveSource threw:', e); }
   try { simulationRunner.stop(); }
   catch (e) { console.error('[shutdown] simulationRunner.stop threw:', e); }
   for (const app of world.apps.values()) {

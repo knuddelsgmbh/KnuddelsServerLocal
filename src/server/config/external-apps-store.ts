@@ -5,9 +5,17 @@ import { deriveAppIdFromPath } from './external-apps.js';
 const STORE_FILE = path.resolve('.test-env/external-apps.json');
 
 export type PersistedExternalApp = {
+  /** Absolute path to the app's repo ROOT (artifacts derived as `<path>/dist`). */
   path: string;
   appId: string;
+  /** Enable "Live Source" (frontend HMR + auto-spawned `yarn watch`) for this app. */
+  liveSource?: boolean;
+  /** Port the spawned `ks start` dev server listens on (default 3100). */
+  frontendDevPort?: number;
 };
+
+/** On-disk shape — tolerant of the legacy `hotReload` key (renamed to `liveSource`). */
+type PersistedExternalAppRaw = PersistedExternalApp & { hotReload?: boolean };
 
 type StoreShapeV2 = { entries: PersistedExternalApp[] };
 type StoreShapeV1 = { paths: string[] };
@@ -20,10 +28,11 @@ function readStore(): StoreShapeV2 {
 
     // V2: explicit {path, appId} entries.
     if (Array.isArray(parsed?.entries)) {
-      const entries = parsed.entries
-        .filter((e): e is PersistedExternalApp =>
+      const entries = (parsed.entries as PersistedExternalAppRaw[])
+        .filter((e): e is PersistedExternalAppRaw =>
           !!e && typeof e.path === 'string' && typeof e.appId === 'string'
-        );
+        )
+        .map(normalizeEntry);
       return { entries };
     }
 
@@ -52,6 +61,15 @@ function readStore(): StoreShapeV2 {
   }
 }
 
+/** Migrate the legacy `hotReload` key to `liveSource` (back-compat). */
+function normalizeEntry(e: PersistedExternalAppRaw): PersistedExternalApp {
+  const liveSource = e.liveSource ?? e.hotReload;
+  const out: PersistedExternalApp = { path: e.path, appId: e.appId };
+  if (liveSource !== undefined) out.liveSource = liveSource;
+  if (e.frontendDevPort !== undefined) out.frontendDevPort = e.frontendDevPort;
+  return out;
+}
+
 function writeStore(store: StoreShapeV2): void {
   fs.mkdirSync(path.dirname(STORE_FILE), { recursive: true });
   fs.writeFileSync(STORE_FILE, JSON.stringify(store, null, 2));
@@ -75,4 +93,16 @@ export function unpersistExternalApp(absPath: string): void {
   if (next.length !== store.entries.length) {
     writeStore({ entries: next });
   }
+}
+
+/** Patch a persisted entry in place (matched by repo-root path). No-op if absent. */
+export function updatePersistedExternalApp(
+  absPath: string,
+  patch: Partial<Omit<PersistedExternalApp, 'path'>>,
+): void {
+  const store = readStore();
+  const entry = store.entries.find(e => e.path === absPath);
+  if (!entry) return;
+  Object.assign(entry, patch);
+  writeStore(store);
 }

@@ -6,6 +6,7 @@
   "description": "Lokale Test-Umgebung für Knuddels UserApps",
   "scripts": {
     "dev": "concurrently -k -n server,ui -c blue,magenta \"npm run dev:server\" \"npm run dev:ui\"",
+    "dev:local": "npm run dev",
     "dev:server": "tsx watch src/server/index.ts",
     "dev:ui": "vite --config src/debug-ui/vite.config.ts",
     "build:ui": "vite build --config src/debug-ui/vite.config.ts",
@@ -13,10 +14,12 @@
   },
   "dependencies": {
     "chokidar": "^3.6.0",
+    "cross-spawn": "^7.0.6",
     "express": "^4.21.2",
     "ws": "^8.18.0"
   },
   "devDependencies": {
+    "@types/cross-spawn": "^6.0.6",
     "@types/express": "^4.17.21",
     "@types/node": "^20.14.10",
     "@types/react": "^18.3.3",
