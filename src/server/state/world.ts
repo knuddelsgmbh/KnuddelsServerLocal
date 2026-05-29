@@ -13,7 +13,11 @@ export type SimUser = {
   isChannelOwner: boolean;
   /** True if this user is an App-Manager (developer/admin of the app). */
   isAppManager: boolean;
+  /** Knuddel-Saldo des Users in ganzen Knuddeln (Apps sehen diesen Wert über `user.getKnuddelAmount()`). */
+  knuddel: number;
 };
+
+export const DEFAULT_KNUDDEL = 1000;
 
 export type AppContentSpec = {
   sessionId: string;
@@ -86,6 +90,7 @@ class World extends EventEmitter {
       isInChannel: true,
       isChannelOwner: false,
       isAppManager: true,
+      knuddel: DEFAULT_KNUDDEL,
     });
     [
       { nick: 'Anna',  gender: 'Female' as const, age: 27, owner: true,  appMgr: true  },
@@ -103,6 +108,7 @@ class World extends EventEmitter {
         isInChannel: false,
         isChannelOwner: u.owner,
         isAppManager: u.appMgr,
+        knuddel: DEFAULT_KNUDDEL,
       });
       this.nextUserId = Math.max(this.nextUserId, id + 1);
     });

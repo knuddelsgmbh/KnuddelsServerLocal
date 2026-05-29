@@ -11,6 +11,7 @@ export type SimUser = {
   isInChannel: boolean;
   isChannelOwner: boolean;
   isAppManager: boolean;
+  knuddel: number;
 };
 
 export type AppContentSpec = {

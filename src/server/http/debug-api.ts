@@ -1,7 +1,7 @@
 import type { Express } from 'express';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { world, SimUser, AppRecord } from '../state/world.js';
+import { world, SimUser, AppRecord, DEFAULT_KNUDDEL } from '../state/world.js';
 import { appRegistry, safeAppId } from '../state/app-registry.js';
 import { dispatchUserJoined, dispatchPublicMessage, dispatchPublicActionMessage } from '../simulation/dispatch.js';
 import { handleSlashCommand } from './ws-bridge.js';
@@ -84,6 +84,7 @@ export function registerDebugApi(app: Express): void {
       isInChannel: false,
       isChannelOwner: Boolean(req.body?.isChannelOwner),
       isAppManager: Boolean(req.body?.isAppManager),
+      knuddel: clampKnuddel(req.body?.knuddel, DEFAULT_KNUDDEL),
     };
     world.users.set(id, sim);
     world.emitChange();
@@ -97,6 +98,20 @@ export function registerDebugApi(app: Express): void {
     if (typeof req.body?.isChannelOwner === 'boolean') sim.isChannelOwner = req.body.isChannelOwner;
     if (typeof req.body?.isAppManager === 'boolean')   sim.isAppManager   = req.body.isAppManager;
     if (typeof req.body?.status === 'string')          sim.status         = req.body.status as any;
+    if (req.body?.knuddel !== undefined)               sim.knuddel        = clampKnuddel(req.body.knuddel, sim.knuddel);
+    world.emitChange();
+    res.json({ ok: true, user: sim });
+  });
+
+  // Dedicated endpoint for live knuddel-balance edits (used by the inline
+  // input in the user table). Same effect as setUserFlags with `knuddel`,
+  // but explicit and easier to extend later (e.g. add/subtract semantics).
+  app.post('/api/debug/setUserKnuddel', (req, res) => {
+    const userId = Number(req.body?.userId);
+    const sim = world.users.get(userId);
+    if (!sim) return res.status(404).json({ error: 'unknown userId' });
+    if (req.body?.knuddel === undefined) return res.status(400).json({ error: 'knuddel required' });
+    sim.knuddel = clampKnuddel(req.body.knuddel, sim.knuddel);
     world.emitChange();
     res.json({ ok: true, user: sim });
   });
@@ -427,6 +442,16 @@ function listFeatureFlagProfiles(): {
     channels: Array.from(allChannels).sort((a, b) => a.localeCompare(b)),
     perApp,
   };
+}
+
+// Übernimmt eingehende Knuddel-Werte (Number, String, JSON-`null`/`undefined`)
+// und gibt einen sicheren ganzzahligen Saldo zurück. Negative Werte werden auf
+// 0 geklemmt — Knuddel-Saldo darf nie negativ sein. Ungültiges Input fällt
+// auf den Fallback zurück (z.B. der bisherige Saldo).
+function clampKnuddel(value: any, fallback: number): number {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(0, Math.round(n));
 }
 
 function makePrivateMessage(author: any, text: string, receivers: any[]): any {

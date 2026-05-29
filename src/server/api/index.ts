@@ -212,6 +212,25 @@ export function buildApi(appRec: AppRecord) {
     };
   }
 
+  // ============================== Knuddel-Konvertierung ==============================
+  // App-Code übergibt KnuddelAmount-Instanzen oder rohe Numbers an
+  // canTransferKnuddelToApp/transferKnuddelToApp; wir extrahieren die ganze
+  // Knuddel-Anzahl unabhängig davon. Rückgabe `null` wenn nichts Brauchbares
+  // drin steckt, damit der Caller einen sinnvollen Default wählen kann.
+  function readKnuddelNumber(value: any): number | null {
+    if (value == null) return null;
+    if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+    if (typeof value.asNumber === 'function') {
+      const n = value.asNumber();
+      return Number.isFinite(n) ? n : null;
+    }
+    if (typeof value.getKnuddelCents === 'function') {
+      const c = value.getKnuddelCents();
+      return Number.isFinite(c) ? c / 100 : null;
+    }
+    return null;
+  }
+
   // ============================== Profile photo URLs ==============================
   // Stable per-user random avatar so the same user keeps the same picture
   // across reloads. Humans get a Pravatar photo (1..70 deterministic by id),
@@ -286,12 +305,22 @@ export function buildApi(appRec: AppRecord) {
       isConnectedWithK3Client: () => true,
       getChannelTalkPermission: () => ChannelTalkPermission.Default,
       getAuthenticityClassification: () => AuthenticityClassification.Trusted,
-      getKnuddelAmount: () => new KnuddelAmount(1000),
-      getMaxKnuddelToApp: () => new KnuddelAmount(10000),
+      getKnuddelAmount: () => new KnuddelAmount(sim.knuddel),
+      getMaxKnuddelToApp: () => new KnuddelAmount(Math.max(sim.knuddel, 10000)),
       getKnuddelAccount: () => ({}),
-      canTransferKnuddelToApp: () => true,
-      transferKnuddelToApp: (_amount: any, _reason: string, params?: any) => {
-        params?.onSuccess?.();
+      canTransferKnuddelToApp: (amount?: any) => {
+        const n = readKnuddelNumber(amount);
+        return n == null ? sim.knuddel > 0 : sim.knuddel >= n;
+      },
+      transferKnuddelToApp: (amount: any, _reason: string, params?: any) => {
+        const n = readKnuddelNumber(amount) ?? 0;
+        if (n < 0 || sim.knuddel < n) {
+          try { params?.onError?.('insufficient knuddel'); } catch (e: any) { Logger.error('transferKnuddelToApp.onError threw', e); }
+          return;
+        }
+        sim.knuddel -= n;
+        world.emitChange();
+        try { params?.onSuccess?.(); } catch (e: any) { Logger.error('transferKnuddelToApp.onSuccess threw', e); }
       },
       triggerDice: () => { /* noop in sim */ },
       addNicklistIcon: () => {},

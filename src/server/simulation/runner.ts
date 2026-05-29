@@ -1,4 +1,4 @@
-import { world, SimUser } from '../state/world.js';
+import { world, SimUser, DEFAULT_KNUDDEL } from '../state/world.js';
 import { dispatchPublicMessage, dispatchUserJoined, dispatchUserLeft } from './dispatch.js';
 import {
   NICK_POOL,
@@ -191,6 +191,7 @@ class SimulationRunner {
       isInChannel: false,
       isChannelOwner: false,
       isAppManager: false,
+      knuddel: DEFAULT_KNUDDEL,
     };
     world.users.set(id, sim);
     const personality = PERSONALITIES[personalityId];

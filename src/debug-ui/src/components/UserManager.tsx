@@ -5,12 +5,15 @@ import { postJson } from '../api/http.js';
 const LEAGUES = ['bronze', 'silber', 'gold', 'smaragd', 'diamant', 'elite'] as const;
 type League = typeof LEAGUES[number];
 
+const DEFAULT_KNUDDEL = 1000;
+
 export function UserManager() {
   const users = useStore(s => s.snapshot.users);
   const defaultBotId = useStore(s => s.snapshot.defaultBotUserId);
   const [nick, setNick] = useState('');
   const [gender, setGender] = useState<'Male' | 'Female' | 'Unknown'>('Unknown');
   const [age, setAge] = useState(25);
+  const [knuddel, setKnuddel] = useState(DEFAULT_KNUDDEL);
   const [startLeague, setStartLeague] = useState<'' | League>('');
   const [err, setErr] = useState<string | null>(null);
 
@@ -19,7 +22,7 @@ export function UserManager() {
     if (!nick.trim()) return;
     try {
       const created = await postJson<{ ok: boolean; user: { userId: number; nick: string } }>(
-        '/api/debug/createUser', { nick: nick.trim(), gender, age });
+        '/api/debug/createUser', { nick: nick.trim(), gender, age, knuddel });
       if (startLeague && created.user) {
         // Skip onboarding + place in chosen league. Sent as the new user
         // themselves — IS_TEST_SYSTEM=true means hasDevPermission() passes
@@ -31,6 +34,7 @@ export function UserManager() {
       }
       setNick('');
       setStartLeague('');
+      setKnuddel(DEFAULT_KNUDDEL);
     } catch (e: any) {
       setErr(e.message);
     }
@@ -60,6 +64,9 @@ export function UserManager() {
             <option value="Male">Male</option>
           </select>
           <input type="number" min={1} max={120} value={age} onChange={e => setAge(Number(e.target.value))} style={{ maxWidth: 80 }} />
+          <input type="number" min={0} step={100} value={knuddel}
+                 onChange={e => setKnuddel(Math.max(0, Math.round(Number(e.target.value) || 0)))}
+                 style={{ maxWidth: 110 }} title="Start-Knuddel" placeholder="Knuddel" />
           <select value={startLeague} onChange={e => setStartLeague(e.target.value as any)} title="LevelingSystem-Start-Liga">
             <option value="">Liga: kein Override</option>
             {LEAGUES.map(l => <option key={l} value={l}>Liga: {l}</option>)}
@@ -77,7 +84,7 @@ export function UserManager() {
         <h3>Users ({users.length})</h3>
         <table>
           <thead>
-            <tr><th></th><th>ID</th><th>Nick</th><th>Type</th><th>Status</th><th>Gender</th><th>Age</th><th>Rollen</th><th>im Channel</th><th></th></tr>
+            <tr><th></th><th>ID</th><th>Nick</th><th>Type</th><th>Status</th><th>Gender</th><th>Age</th><th>Knuddel</th><th>Rollen</th><th>im Channel</th><th></th></tr>
           </thead>
           <tbody>
             {users.map(u => (
@@ -89,6 +96,7 @@ export function UserManager() {
                 <td>{u.status}</td>
                 <td>{u.gender}</td>
                 <td>{u.age}</td>
+                <td><KnuddelEditor userId={u.userId} value={u.knuddel} /></td>
                 <td>
                   <div className="row" style={{ gap: 4, flexWrap: 'wrap' }}>
                     <label className="row small" style={{ gap: 4 }}>
@@ -234,6 +242,56 @@ function LevelingControls({ users }: { users: LSTarget[] }) {
       {status.kind === 'ok'  && <p className="small" style={{ marginTop: 8, color: 'var(--green)' }}>{status.msg}</p>}
       {status.kind === 'err' && <p className="small" style={{ marginTop: 8, color: 'var(--red)' }}>{status.msg}</p>}
     </div>
+  );
+}
+
+// Inline-editierbarer Knuddel-Saldo. Schreibt erst beim Blur oder Enter, damit
+// nicht jeder Tastendruck einen API-Call auslöst. Bei externen Änderungen
+// (App zieht Knuddel via transferKnuddelToApp) wird der Wert via WS-Snapshot
+// nachgezogen — solange das Feld nicht aktiv editiert wird.
+function KnuddelEditor({ userId, value }: { userId: number; value: number }) {
+  const [draft, setDraft] = useState(String(value));
+  const [editing, setEditing] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  // Externe Updates übernehmen, solange wir nicht selbst tippen.
+  useEffect(() => {
+    if (!editing) setDraft(String(value));
+  }, [value, editing]);
+
+  async function commit() {
+    setEditing(false);
+    const n = Math.max(0, Math.round(Number(draft)));
+    if (!Number.isFinite(n) || n === value) {
+      setDraft(String(value));
+      return;
+    }
+    setBusy(true);
+    try {
+      await postJson('/api/debug/setUserKnuddel', { userId, knuddel: n });
+    } catch {
+      setDraft(String(value));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <input
+      type="number"
+      min={0}
+      step={100}
+      value={draft}
+      onFocus={() => setEditing(true)}
+      onChange={e => setDraft(e.target.value)}
+      onBlur={commit}
+      onKeyDown={e => {
+        if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+        else if (e.key === 'Escape') { setDraft(String(value)); setEditing(false); (e.target as HTMLInputElement).blur(); }
+      }}
+      disabled={busy}
+      style={{ width: 90, textAlign: 'right' }}
+    />
   );
 }
 
