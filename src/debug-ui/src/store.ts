@@ -1,17 +1,57 @@
 import { useSyncExternalStore } from 'react';
 import { wsClient, type WsMessage } from './api/wsClient.js';
 
+export type SimGender = 'Male' | 'Female' | 'Unknown';
+export type SimGenderDetailed = 'Male' | 'Female' | 'NonBinaryHe' | 'NonBinaryShe' | 'Unknown';
+export type SimUserStatus = 'Newbie' | 'Family' | 'Stammi' | 'HonoryMember' | 'Admin' | 'SystemBot' | 'Sysadmin';
+export type SimUserType = 'Human' | 'AppBot' | 'SystemBot';
+export type SimClientType = 'Applet' | 'Browser' | 'Android' | 'IOS' | 'Offline' | 'Web' | 'MobileWeb';
+export type SimChannelTalkPermission = 'NotInChannel' | 'Default' | 'TalkOnce' | 'TalkPermanent' | 'VIP' | 'Moderator';
+export type SimAuthenticityClassification = 'ServiceNotAvailable' | 'Unknown' | 'Trusted' | 'VeryTrusted';
+
 export type SimUser = {
   userId: number;
   nick: string;
-  gender: 'Male' | 'Female' | 'Unknown';
+  gender: SimGender;
   age: number;
-  status: string;
-  userType: 'Human' | 'AppBot' | 'SystemBot';
+  status: SimUserStatus;
+  userType: SimUserType;
   isInChannel: boolean;
   isChannelOwner: boolean;
   isAppManager: boolean;
-  knuddel: number;
+
+  clientType: SimClientType;
+  isK3Client: boolean;
+
+  genderDetailed: SimGenderDetailed;
+  profilePhoto: string;
+  hasProfilePhoto: boolean;
+  isProfilePhotoVerified: boolean;
+  readme: string;
+  isAgeVerified: boolean;
+  authenticityClassification: SimAuthenticityClassification;
+
+  onlineMinutes: number;
+  regDate: number;
+  lastOnlineTime: number;
+
+  isChannelModerator: boolean;
+  isChannelCoreUser: boolean;
+  isEventModerator: boolean;
+  isInTeam: boolean;
+  channelTalkPermission: SimChannelTalkPermission;
+
+  isAway: boolean;
+  isLocked: boolean;
+  isMuted: boolean;
+  isColorMuted: boolean;
+  isLikingChannel: boolean;
+  isStreamingVideo: boolean;
+
+  knuddelAmount: number;
+  maxKnuddelToApp: number;
+
+  nicklistIcons?: { [appId: string]: { imagePath: string; imageWidth: number }[] };
 };
 
 export type AppContentSpec = {
@@ -24,6 +64,23 @@ export type AppContentSpec = {
   responsive: boolean;
   assetPath: string;
   pageData: Record<string, unknown>;
+  minWidth?: number;
+  minHeight?: number;
+  maxWidth?: number;
+  maxHeight?: number;
+  resizable?: boolean;
+  backgroundColor?: string;
+  backgroundColorTransitionMs?: number;
+  iconUrl?: string;
+  title?: string;
+  loadConfig?: {
+    enabled: boolean;
+    backgroundColor: string | null;
+    backgroundImage: string;
+    loadingIndicatorImage: string;
+    foregroundColor: string | null;
+    text: string;
+  };
 };
 
 export type AppSnap = {
@@ -55,10 +112,11 @@ export type LogEntry = {
 export type ChatLogEntry = {
   ts: number;
   appId: string;
-  kind: 'public' | 'private' | 'action' | 'event' | 'post';
+  kind: 'public' | 'private' | 'action' | 'event' | 'post' | 'in-app';
   fromUserId: number;
   toUserIds?: number[];
   text: string;
+  chatGroupId?: string;
 };
 
 type State = {

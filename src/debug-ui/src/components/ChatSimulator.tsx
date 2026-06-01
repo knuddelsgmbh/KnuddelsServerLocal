@@ -110,9 +110,9 @@ export function ChatSimulator() {
             return (
               <div key={i} className="line">
                 <span className="meta">{dt}</span>
-                <span className="meta">[{c.kind}]</span>
+                <span className="meta">[{c.kind === 'in-app' && c.chatGroupId ? `in-app:${c.chatGroupId}` : c.kind}]</span>
                 <strong>{from}</strong>
-                {c.kind === 'private' && to && <> → <em>{to}</em></>}
+                {(c.kind === 'private' || c.kind === 'in-app') && to && <> → <em>{to}</em></>}
                 <>: </>{c.text}
               </div>
             );

@@ -1,7 +1,7 @@
 import type { Express } from 'express';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { world, SimUser, AppRecord, DEFAULT_KNUDDEL } from '../state/world.js';
+import { world, SimUser, AppRecord, defaultUserFields } from '../state/world.js';
 import { appRegistry, safeAppId } from '../state/app-registry.js';
 import { dispatchUserJoined, dispatchPublicMessage, dispatchPublicActionMessage } from '../simulation/dispatch.js';
 import { handleSlashCommand } from './ws-bridge.js';
@@ -75,44 +75,41 @@ export function registerDebugApi(app: Express): void {
       return res.status(409).json({ error: 'nick exists' });
     }
     const id = world.nextUserId++;
+    const gender = (req.body?.gender as any) ?? 'Unknown';
+    const isChannelOwner = Boolean(req.body?.isChannelOwner);
     const sim: SimUser = {
       userId: id,
       nick,
-      gender: (req.body?.gender as any) ?? 'Unknown',
+      gender,
       age: Number(req.body?.age ?? 25),
       status: (req.body?.status as any) ?? 'Stammi',
       userType: (req.body?.userType as any) ?? 'Human',
       isInChannel: false,
-      isChannelOwner: Boolean(req.body?.isChannelOwner),
+      isChannelOwner,
       isAppManager: Boolean(req.body?.isAppManager),
-      knuddel: clampKnuddel(req.body?.knuddel, DEFAULT_KNUDDEL),
+      ...defaultUserFields({ gender, isChannelOwner }),
     };
+    // Apply any extended fields explicitly passed in the body.
+    applyUserPatch(sim, req.body ?? {});
     world.users.set(id, sim);
     world.emitChange();
     res.json({ ok: true, user: sim });
   });
 
-  app.post('/api/debug/setUserFlags', (req, res) => {
+  app.post('/api/debug/updateUser', (req, res) => {
     const userId = Number(req.body?.userId);
     const sim = world.users.get(userId);
     if (!sim) return res.status(404).json({ error: 'unknown userId' });
-    if (typeof req.body?.isChannelOwner === 'boolean') sim.isChannelOwner = req.body.isChannelOwner;
-    if (typeof req.body?.isAppManager === 'boolean')   sim.isAppManager   = req.body.isAppManager;
-    if (typeof req.body?.status === 'string')          sim.status         = req.body.status as any;
-    if (req.body?.knuddel !== undefined)               sim.knuddel        = clampKnuddel(req.body.knuddel, sim.knuddel);
-    world.emitChange();
-    res.json({ ok: true, user: sim });
-  });
-
-  // Dedicated endpoint for live knuddel-balance edits (used by the inline
-  // input in the user table). Same effect as setUserFlags with `knuddel`,
-  // but explicit and easier to extend later (e.g. add/subtract semantics).
-  app.post('/api/debug/setUserKnuddel', (req, res) => {
-    const userId = Number(req.body?.userId);
-    const sim = world.users.get(userId);
-    if (!sim) return res.status(404).json({ error: 'unknown userId' });
-    if (req.body?.knuddel === undefined) return res.status(400).json({ error: 'knuddel required' });
-    sim.knuddel = clampKnuddel(req.body.knuddel, sim.knuddel);
+    const patch = req.body ?? {};
+    if (typeof patch.nick === 'string') {
+      const nick = patch.nick.trim();
+      if (!nick) return res.status(400).json({ error: 'nick required' });
+      if (Array.from(world.users.values()).some(u => u.userId !== userId && u.nick === nick)) {
+        return res.status(409).json({ error: 'nick exists' });
+      }
+      sim.nick = nick;
+    }
+    applyUserPatch(sim, patch);
     world.emitChange();
     res.json({ ok: true, user: sim });
   });
@@ -355,6 +352,14 @@ export function registerDebugApi(app: Express): void {
     res.json({ ok: true, appId, fileCount: writes.length, hasMain });
   });
 
+  app.post('/api/debug/app/:appId/restart', (req, res) => {
+    const appId = safeAppId(req.params.appId);
+    if (!appId) return res.status(400).json({ error: 'invalid appId' });
+    if (!appRegistry.has(appId)) return res.status(404).json({ error: 'unknown appId' });
+    loadOrReload(appId);
+    res.json({ ok: true });
+  });
+
   app.delete('/api/debug/app/:appId', (req, res) => {
     const appId = safeAppId(req.params.appId);
     if (!appId) return res.status(400).json({ error: 'invalid appId' });
@@ -458,14 +463,37 @@ function listFeatureFlagProfiles(): {
   };
 }
 
-// Übernimmt eingehende Knuddel-Werte (Number, String, JSON-`null`/`undefined`)
-// und gibt einen sicheren ganzzahligen Saldo zurück. Negative Werte werden auf
-// 0 geklemmt — Knuddel-Saldo darf nie negativ sein. Ungültiges Input fällt
-// auf den Fallback zurück (z.B. der bisherige Saldo).
-function clampKnuddel(value: any, fallback: number): number {
-  const n = Number(value);
-  if (!Number.isFinite(n)) return fallback;
-  return Math.max(0, Math.round(n));
+/**
+ * Applies a body-patch onto a SimUser. Skips `userId`, `nick` (handled by caller
+ * for uniqueness check) and `isInChannel` (driven by join/leave endpoints).
+ */
+function applyUserPatch(sim: SimUser, patch: Record<string, any>): void {
+  const stringFields = [
+    'gender', 'genderDetailed', 'status', 'userType', 'clientType',
+    'channelTalkPermission', 'authenticityClassification',
+    'profilePhoto', 'readme',
+  ] as const;
+  for (const k of stringFields) {
+    if (typeof patch[k] === 'string') (sim as any)[k] = patch[k];
+  }
+  const numericFields = [
+    'age', 'onlineMinutes', 'regDate', 'lastOnlineTime',
+    'knuddelAmount', 'maxKnuddelToApp',
+  ] as const;
+  for (const k of numericFields) {
+    if (patch[k] !== undefined && Number.isFinite(Number(patch[k]))) {
+      (sim as any)[k] = Number(patch[k]);
+    }
+  }
+  const booleanFields = [
+    'isK3Client', 'hasProfilePhoto', 'isProfilePhotoVerified', 'isAgeVerified',
+    'isChannelOwner', 'isAppManager', 'isChannelModerator', 'isChannelCoreUser',
+    'isEventModerator', 'isInTeam', 'isAway', 'isLocked', 'isMuted', 'isColorMuted',
+    'isLikingChannel', 'isStreamingVideo',
+  ] as const;
+  for (const k of booleanFields) {
+    if (typeof patch[k] === 'boolean') (sim as any)[k] = patch[k];
+  }
 }
 
 function makePrivateMessage(author: any, text: string, receivers: any[]): any {

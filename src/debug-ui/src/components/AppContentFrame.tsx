@@ -50,6 +50,25 @@ export function AppContentFrame({ spec }: { spec: AppContentSpec }) {
     + `&v=${reloadKey}`;
   const userNick = users.find(u => u.userId === spec.userId)?.nick ?? `#${spec.userId}`;
 
+  // Headerbar/Global modes always span the container width — only height is honored
+  // from `setSize`. Popup/Overlay honor both width and height.
+  const isFullWidth = spec.appViewMode === 'Headerbar' || spec.appViewMode === 'Global';
+  const iframeStyle: React.CSSProperties = {
+    width: isFullWidth ? '100%' : (spec.width || '100%'),
+    height: spec.height || 480,
+    minWidth: !isFullWidth ? spec.minWidth : undefined,
+    minHeight: spec.minHeight,
+    maxWidth: !isFullWidth ? spec.maxWidth : undefined,
+    maxHeight: spec.maxHeight,
+    background: spec.backgroundColor,
+    transition: spec.backgroundColorTransitionMs
+      ? `background-color ${spec.backgroundColorTransitionMs}ms`
+      : undefined,
+  };
+  const titleLabel = spec.title || `${spec.appId}/${spec.sessionId}`;
+  const lc = spec.loadConfig;
+  const showLoadBanner = lc && lc.enabled && (lc.text || lc.backgroundColor || lc.foregroundColor || lc.backgroundImage || lc.loadingIndicatorImage);
+
   return (
     <div className="app-frame">
       <div className="frame-header">
@@ -57,6 +76,7 @@ export function AppContentFrame({ spec }: { spec: AppContentSpec }) {
           <span className="pill">{spec.appViewMode}</span>
           {' '}<strong>{userNick}</strong>
           {' · '}<code>{spec.sessionId}</code>
+          {spec.title ? <> {' · '}<em>{spec.title}</em></> : null}
         </span>
         <span className="row">
           <button
@@ -76,11 +96,30 @@ export function AppContentFrame({ spec }: { spec: AppContentSpec }) {
           <button onClick={() => postJson('/api/debug/closeSession', { sessionId: spec.sessionId })}>×</button>
         </span>
       </div>
+      {showLoadBanner && (
+        <div className="frame-header" style={{
+          background: lc!.backgroundColor ?? undefined,
+          color: lc!.foregroundColor ?? undefined,
+          backgroundImage: lc!.backgroundImage ? `url(/app/${encodeURIComponent(spec.appId)}/${lc!.backgroundImage})` : undefined,
+          backgroundSize: 'cover',
+          fontStyle: 'italic',
+        }}>
+          <span>
+            <span className="pill">LoadConfig</span>
+            {lc!.loadingIndicatorImage && (
+              <img src={`/app/${encodeURIComponent(spec.appId)}/${lc!.loadingIndicatorImage}`}
+                   alt="" style={{ height: 16, marginLeft: 6, verticalAlign: 'middle' }}
+                   onError={e => { (e.currentTarget as HTMLImageElement).style.display = 'none'; }} />
+            )}
+            {' '}{lc!.text || <em>(kein Text)</em>}
+          </span>
+        </div>
+      )}
       <iframe ref={ref}
               key={reloadKey}
               src={url}
-              style={{ width: '100%', height: spec.height || 480 }}
-              title={`${spec.appId}/${spec.sessionId}`} />
+              style={iframeStyle}
+              title={titleLabel} />
     </div>
   );
 }

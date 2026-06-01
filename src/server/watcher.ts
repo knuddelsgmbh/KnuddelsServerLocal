@@ -274,6 +274,7 @@ export function setLiveSource(appId: string, enabled: boolean): SetLiveSourceRes
   // Reload the iframes to reflect the new source. On the very first enable the
   // dev server may still be booting — the frame shows "booting…" until the
   // readiness probe fires a second reload. Once warm, both directions are instant.
+  world.bumpFrontendVersion(appId);
   world.emit('frontend-changed', appId);
   world.emitChange();
   return { ok: true, liveSource: enabled };
@@ -325,6 +326,9 @@ function onFileEvent(p: string, schedule: (id: string) => void): void {
     }
     const rel = path.relative(ext.appDir, p);
     if (rel.split(path.sep)[0] === 'www') {
+      // Bump the per-app version so `Client.getCacheInvalidationId()` changes
+      // on every frontend edit, then reload the iframe.
+      world.bumpFrontendVersion(ext.appId);
       world.emit('frontend-changed', ext.appId);
       return;
     }
@@ -337,7 +341,10 @@ function onFileEvent(p: string, schedule: (id: string) => void): void {
   if (rel.startsWith('..') || path.isAbsolute(rel)) return;
   if (rel.split(path.sep)[1] === 'www') {
     const appId = rel.split(path.sep)[0];
-    if (appId) world.emit('frontend-changed', appId);
+    if (appId) {
+      world.bumpFrontendVersion(appId);
+      world.emit('frontend-changed', appId);
+    }
     return;
   }
   const appId = appIdFromInternalPath(p);
@@ -480,6 +487,7 @@ export function loadOrReload(appId: string): void {
     persistence: new PersistenceStore(appId),
     sessions: new Map(),
     toplists: new Map(),
+    profileEntries: new Map(),
   };
   world.apps.set(appId, rec);
 

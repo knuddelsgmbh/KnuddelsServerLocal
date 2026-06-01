@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
-import { useStore } from '../store.js';
+import { useStore, type SimUser } from '../store.js';
 import { postJson } from '../api/http.js';
+import { UserEditModal } from './UserEditModal.js';
 
 const LEAGUES = ['bronze', 'silber', 'gold', 'smaragd', 'diamant', 'elite'] as const;
 type League = typeof LEAGUES[number];
@@ -16,13 +17,14 @@ export function UserManager() {
   const [knuddel, setKnuddel] = useState(DEFAULT_KNUDDEL);
   const [startLeague, setStartLeague] = useState<'' | League>('');
   const [err, setErr] = useState<string | null>(null);
+  const [editingUserId, setEditingUserId] = useState<number | null>(null);
 
   async function addUser() {
     setErr(null);
     if (!nick.trim()) return;
     try {
       const created = await postJson<{ ok: boolean; user: { userId: number; nick: string } }>(
-        '/api/debug/createUser', { nick: nick.trim(), gender, age, knuddel });
+        '/api/debug/createUser', { nick: nick.trim(), gender, age, knuddelAmount: knuddel });
       if (startLeague && created.user) {
         // Skip onboarding + place in chosen league. Sent as the new user
         // themselves — IS_TEST_SYSTEM=true means hasDevPermission() passes
@@ -48,9 +50,10 @@ export function UserManager() {
     if (!confirm('User wirklich löschen? Triggert onUserDeleted in allen Apps.')) return;
     await postJson('/api/debug/deleteUser', { userId });
   }
-  async function setFlag(userId: number, flag: 'isChannelOwner' | 'isAppManager', value: boolean) {
-    await postJson('/api/debug/setUserFlags', { userId, [flag]: value });
-  }
+
+  const editingUser: SimUser | undefined = editingUserId != null
+    ? users.find(u => u.userId === editingUserId)
+    : undefined;
 
   return (
     <div>
@@ -84,36 +87,38 @@ export function UserManager() {
         <h3>Users ({users.length})</h3>
         <table>
           <thead>
-            <tr><th></th><th>ID</th><th>Nick</th><th>Type</th><th>Status</th><th>Gender</th><th>Age</th><th>Knuddel</th><th>Rollen</th><th>im Channel</th><th></th></tr>
+            <tr><th></th><th>ID</th><th>Nick</th><th>Type</th><th>Status</th><th>Gender</th><th>Age</th><th>Knuddel</th><th>Client</th><th>im Channel</th><th></th></tr>
           </thead>
           <tbody>
             {users.map(u => (
               <tr key={u.userId}>
                 <td><Avatar userId={u.userId} nick={u.nick} userType={u.userType} /></td>
                 <td className="muted">{u.userId}</td>
-                <td><strong>{u.nick}</strong></td>
+                <td>
+                  <strong>{u.nick}</strong>
+                  {u.nicklistIcons && Object.entries(u.nicklistIcons).flatMap(([appId, icons]) =>
+                    icons.map((icon, i) => (
+                      <img key={`${appId}:${i}:${icon.imagePath}`}
+                           src={`/app/${appId}/${icon.imagePath}`}
+                           title={`${appId}: ${icon.imagePath}`}
+                           style={{ width: icon.imageWidth, height: icon.imageWidth, marginLeft: 4, verticalAlign: 'middle' }}
+                           onError={e => { (e.currentTarget as HTMLImageElement).style.display = 'none'; }} />
+                    ))
+                  )}
+                </td>
                 <td>{u.userType}</td>
                 <td>{u.status}</td>
                 <td>{u.gender}</td>
                 <td>{u.age}</td>
-                <td><KnuddelEditor userId={u.userId} value={u.knuddel} /></td>
-                <td>
-                  <div className="row" style={{ gap: 4, flexWrap: 'wrap' }}>
-                    <label className="row small" style={{ gap: 4 }}>
-                      <input type="checkbox"
-                             checked={u.isChannelOwner}
-                             onChange={e => setFlag(u.userId, 'isChannelOwner', e.target.checked)}
-                             style={{ width: 'auto' }} />
-                      <span>Owner</span>
-                    </label>
-                    <label className="row small" style={{ gap: 4 }}>
-                      <input type="checkbox"
-                             checked={u.isAppManager}
-                             onChange={e => setFlag(u.userId, 'isAppManager', e.target.checked)}
-                             style={{ width: 'auto' }} />
-                      <span>AppMgr</span>
-                    </label>
-                  </div>
+                <td className="muted" style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}
+                    title="Knuddel-Saldo (Bearbeiten über den Bearbeiten-Dialog)">
+                  {u.knuddelAmount.toLocaleString('de-DE')}
+                </td>
+                <td className="small">
+                  {u.clientType}
+                  {u.isK3Client
+                    ? <span className="pill in" style={{ marginLeft: 6 }}>K3</span>
+                    : <span className="pill out" style={{ marginLeft: 6 }}>no K3</span>}
                 </td>
                 <td>
                   <span className={`pill ${u.isInChannel ? 'in' : 'out'}`}>
@@ -127,6 +132,7 @@ export function UserManager() {
                         {u.isInChannel ? 'Leave' : 'Join'}
                       </button>
                     )}
+                    <button onClick={() => setEditingUserId(u.userId)}>Bearbeiten</button>
                     {u.userId !== defaultBotId && u.userType === 'Human' && (
                       <button onClick={() => deleteUser(u.userId)}>Löschen</button>
                     )}
@@ -141,6 +147,10 @@ export function UserManager() {
       <LevelingControls
         users={users.map(u => ({ userId: u.userId, nick: u.nick, userType: u.userType }))}
       />
+
+      {editingUser && (
+        <UserEditModal user={editingUser} onClose={() => setEditingUserId(null)} />
+      )}
     </div>
   );
 }
@@ -242,56 +252,6 @@ function LevelingControls({ users }: { users: LSTarget[] }) {
       {status.kind === 'ok'  && <p className="small" style={{ marginTop: 8, color: 'var(--green)' }}>{status.msg}</p>}
       {status.kind === 'err' && <p className="small" style={{ marginTop: 8, color: 'var(--red)' }}>{status.msg}</p>}
     </div>
-  );
-}
-
-// Inline-editierbarer Knuddel-Saldo. Schreibt erst beim Blur oder Enter, damit
-// nicht jeder Tastendruck einen API-Call auslöst. Bei externen Änderungen
-// (App zieht Knuddel via transferKnuddelToApp) wird der Wert via WS-Snapshot
-// nachgezogen — solange das Feld nicht aktiv editiert wird.
-function KnuddelEditor({ userId, value }: { userId: number; value: number }) {
-  const [draft, setDraft] = useState(String(value));
-  const [editing, setEditing] = useState(false);
-  const [busy, setBusy] = useState(false);
-
-  // Externe Updates übernehmen, solange wir nicht selbst tippen.
-  useEffect(() => {
-    if (!editing) setDraft(String(value));
-  }, [value, editing]);
-
-  async function commit() {
-    setEditing(false);
-    const n = Math.max(0, Math.round(Number(draft)));
-    if (!Number.isFinite(n) || n === value) {
-      setDraft(String(value));
-      return;
-    }
-    setBusy(true);
-    try {
-      await postJson('/api/debug/setUserKnuddel', { userId, knuddel: n });
-    } catch {
-      setDraft(String(value));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <input
-      type="number"
-      min={0}
-      step={100}
-      value={draft}
-      onFocus={() => setEditing(true)}
-      onChange={e => setDraft(e.target.value)}
-      onBlur={commit}
-      onKeyDown={e => {
-        if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
-        else if (e.key === 'Escape') { setDraft(String(value)); setEditing(false); (e.target as HTMLInputElement).blur(); }
-      }}
-      disabled={busy}
-      style={{ width: 90, textAlign: 'right' }}
-    />
   );
 }
 

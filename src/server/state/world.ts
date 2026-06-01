@@ -2,23 +2,118 @@ import { EventEmitter } from 'node:events';
 import { PersistenceStore } from '../persistence/store.js';
 import { appRegistry } from './app-registry.js';
 
+export type SimGender = 'Male' | 'Female' | 'Unknown';
+export type SimGenderDetailed = 'Male' | 'Female' | 'NonBinaryHe' | 'NonBinaryShe' | 'Unknown';
+export type SimUserStatus = 'Newbie' | 'Family' | 'Stammi' | 'HonoryMember' | 'Admin' | 'SystemBot' | 'Sysadmin';
+export type SimUserType = 'Human' | 'AppBot' | 'SystemBot';
+export type SimClientType = 'Applet' | 'Browser' | 'Android' | 'IOS' | 'Offline' | 'Web' | 'MobileWeb';
+export type SimChannelTalkPermission = 'NotInChannel' | 'Default' | 'TalkOnce' | 'TalkPermanent' | 'VIP' | 'Moderator';
+export type SimAuthenticityClassification = 'ServiceNotAvailable' | 'Unknown' | 'Trusted' | 'VeryTrusted';
+
 export type SimUser = {
   userId: number;
   nick: string;
-  gender: 'Male' | 'Female' | 'Unknown';
+  gender: SimGender;
   age: number;
-  status: 'Newbie' | 'Family' | 'Stammi' | 'HonoryMember' | 'Admin' | 'SystemBot' | 'Sysadmin';
-  userType: 'Human' | 'AppBot' | 'SystemBot';
+  status: SimUserStatus;
+  userType: SimUserType;
   isInChannel: boolean;
   /** True if this user owns the (single, simulated) channel — gates many App permission checks. */
   isChannelOwner: boolean;
   /** True if this user is an App-Manager (developer/admin of the app). */
   isAppManager: boolean;
-  /** Knuddel-Saldo des Users in ganzen Knuddeln (Apps sehen diesen Wert über `user.getKnuddelAmount()`). */
-  knuddel: number;
+
+  // — Client connection
+  clientType: SimClientType;
+  isK3Client: boolean;
+
+  // — Identity (extended)
+  genderDetailed: SimGenderDetailed;
+  profilePhoto: string;
+  hasProfilePhoto: boolean;
+  isProfilePhotoVerified: boolean;
+  readme: string;
+  isAgeVerified: boolean;
+  authenticityClassification: SimAuthenticityClassification;
+
+  // — Time / activity (unix-ms for dates)
+  onlineMinutes: number;
+  regDate: number;
+  lastOnlineTime: number;
+
+  // — Channel role / permissions (independent flags)
+  isChannelModerator: boolean;
+  isChannelCoreUser: boolean;
+  isEventModerator: boolean;
+  isInTeam: boolean;
+  channelTalkPermission: SimChannelTalkPermission;
+
+  // — State flags
+  isAway: boolean;
+  isLocked: boolean;
+  isMuted: boolean;
+  isColorMuted: boolean;
+  isLikingChannel: boolean;
+  isStreamingVideo: boolean;
+
+  // — Knuddel (in Knuddel-Einheiten, nicht Cents)
+  knuddelAmount: number;
+  maxKnuddelToApp: number;
+
+  /**
+   * Per-app nicklist icons set via `User.addNicklistIcon`. Outer key = appId,
+   * each entry one icon registration. Cleared when the owning app is unloaded.
+   */
+  nicklistIcons?: { [appId: string]: { imagePath: string; imageWidth: number }[] };
 };
 
-export const DEFAULT_KNUDDEL = 1000;
+/**
+ * Defaults for all extended SimUser fields. Values match the previously
+ * hardcoded behavior of `makeUser()` in src/server/api/index.ts so adding
+ * the fields doesn't change runtime behavior for existing apps.
+ */
+export function defaultUserFields(opts?: { gender?: SimGender; isChannelOwner?: boolean }): Pick<
+  SimUser,
+  | 'clientType' | 'isK3Client'
+  | 'genderDetailed' | 'profilePhoto' | 'hasProfilePhoto' | 'isProfilePhotoVerified'
+  | 'readme' | 'isAgeVerified' | 'authenticityClassification'
+  | 'onlineMinutes' | 'regDate' | 'lastOnlineTime'
+  | 'isChannelModerator' | 'isChannelCoreUser' | 'isEventModerator' | 'isInTeam'
+  | 'channelTalkPermission'
+  | 'isAway' | 'isLocked' | 'isMuted' | 'isColorMuted' | 'isLikingChannel' | 'isStreamingVideo'
+  | 'knuddelAmount' | 'maxKnuddelToApp'
+> {
+  const gender = opts?.gender ?? 'Unknown';
+  const owner = opts?.isChannelOwner ?? false;
+  const now = Date.now();
+  return {
+    clientType: 'Web',
+    isK3Client: true,
+    genderDetailed: gender,
+    profilePhoto: '',
+    hasProfilePhoto: false,
+    isProfilePhotoVerified: false,
+    readme: '',
+    isAgeVerified: true,
+    authenticityClassification: 'Trusted',
+    onlineMinutes: 0,
+    regDate: now - 1000 * 60 * 60 * 24 * 30,
+    lastOnlineTime: now,
+    isChannelModerator: owner,
+    isChannelCoreUser: owner,
+    isEventModerator: false,
+    isInTeam: false,
+    channelTalkPermission: 'Default',
+    isAway: false,
+    isLocked: false,
+    isMuted: false,
+    isColorMuted: false,
+    isLikingChannel: true,
+    isStreamingVideo: false,
+    knuddelAmount: 1000,
+    maxKnuddelToApp: 10000,
+  };
+}
 
 export type AppContentSpec = {
   sessionId: string;
@@ -30,6 +125,27 @@ export type AppContentSpec = {
   responsive: boolean;
   assetPath: string;
   pageData: Record<string, unknown>;
+  // Mutable frame-level state set by the iframe via `Client.getHostFrame().*`.
+  minWidth?: number;
+  minHeight?: number;
+  maxWidth?: number;
+  maxHeight?: number;
+  resizable?: boolean;
+  backgroundColor?: string;
+  backgroundColorTransitionMs?: number;
+  iconUrl?: string;
+  title?: string;
+  /** Loading-screen configuration set via `AppContent.getLoadConfiguration()`. */
+  loadConfig?: LoadConfigSpec;
+};
+
+export type LoadConfigSpec = {
+  enabled: boolean;
+  backgroundColor: string | null;
+  backgroundImage: string;
+  loadingIndicatorImage: string;
+  foregroundColor: string | null;
+  text: string;
 };
 
 export type LogEntry = {
@@ -42,10 +158,12 @@ export type LogEntry = {
 export type ChatLogEntry = {
   ts: number;
   appId: string;
-  kind: 'public' | 'private' | 'action' | 'event' | 'post';
+  kind: 'public' | 'private' | 'action' | 'event' | 'post' | 'in-app';
   fromUserId: number;
   toUserIds?: number[];
   text: string;
+  /** Only set for kind === 'in-app': the chat-group identifier passed by the app. */
+  chatGroupId?: string;
 };
 
 export type AppRecord = {
@@ -59,6 +177,8 @@ export type AppRecord = {
   sessions: Map<string, AppContentSpec>;
   // Toplists registered by the app:
   toplists: Map<string, { displayName: string; ascending: boolean; labelMapping?: { [minValue: string]: string } }>;
+  // AppProfileEntries registered by the app, keyed by their toplist key:
+  profileEntries: Map<string, { displayType: string }>;
 };
 
 class World extends EventEmitter {
@@ -73,6 +193,9 @@ class World extends EventEmitter {
   private nextSessionId = 1;
   // user id sequence (for ad-hoc creation)
   nextUserId = 100;
+  // monotonic per-app version, bumped on every frontend change. Used to power
+  // a stable `Client.getCacheInvalidationId()` per iframe load.
+  private frontendVersions: Map<string, number> = new Map();
 
   constructor() {
     super();
@@ -91,7 +214,7 @@ class World extends EventEmitter {
       isInChannel: true,
       isChannelOwner: false,
       isAppManager: true,
-      knuddel: DEFAULT_KNUDDEL,
+      ...defaultUserFields({ gender: 'Unknown', isChannelOwner: false }),
     });
     [
       { nick: 'Anna',  gender: 'Female' as const, age: 27, owner: true,  appMgr: true  },
@@ -109,7 +232,7 @@ class World extends EventEmitter {
         isInChannel: false,
         isChannelOwner: u.owner,
         isAppManager: u.appMgr,
-        knuddel: DEFAULT_KNUDDEL,
+        ...defaultUserFields({ gender: u.gender, isChannelOwner: u.owner }),
       });
       this.nextUserId = Math.max(this.nextUserId, id + 1);
     });
@@ -131,6 +254,25 @@ class World extends EventEmitter {
     const app = this.apps.get(spec.appId);
     app?.sessions.set(spec.sessionId, spec);
     this.emit('app-content-shown', spec);
+  }
+  updateAppContentSpec(sessionId: string, patch: Partial<AppContentSpec>): AppContentSpec | undefined {
+    for (const a of this.apps.values()) {
+      const cur = a.sessions.get(sessionId);
+      if (!cur) continue;
+      const next = { ...cur, ...patch };
+      a.sessions.set(sessionId, next);
+      this.emit('app-content-updated', next);
+      return next;
+    }
+    return undefined;
+  }
+  bumpFrontendVersion(appId: string): number {
+    const n = (this.frontendVersions.get(appId) ?? 0) + 1;
+    this.frontendVersions.set(appId, n);
+    return n;
+  }
+  getFrontendVersion(appId: string): number {
+    return this.frontendVersions.get(appId) ?? 0;
   }
   appContentRemoved(sessionId: string, opts?: { replacing?: boolean }): void {
     const replacing = opts?.replacing ?? false;

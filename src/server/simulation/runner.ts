@@ -1,4 +1,4 @@
-import { world, SimUser, DEFAULT_KNUDDEL } from '../state/world.js';
+import { world, SimUser, defaultUserFields } from '../state/world.js';
 import { dispatchPublicMessage, dispatchUserJoined, dispatchUserLeft } from './dispatch.js';
 import {
   NICK_POOL,
@@ -181,17 +181,18 @@ class SimulationRunner {
     const personalityId = pickPersonality(this.config);
     const nick = uniqueNick();
     const id = world.nextUserId++;
+    const gender = pickRandom(['Male', 'Female', 'Unknown'] as const);
     const sim: SimUser = {
       userId: id,
       nick,
-      gender: pickRandom(['Male', 'Female', 'Unknown'] as const),
+      gender,
       age: 18 + Math.floor(Math.random() * 35),
       status: 'Stammi',
       userType: 'Human',
       isInChannel: false,
       isChannelOwner: false,
       isAppManager: false,
-      knuddel: DEFAULT_KNUDDEL,
+      ...defaultUserFields({ gender, isChannelOwner: false }),
     };
     world.users.set(id, sim);
     const personality = PERSONALITIES[personalityId];

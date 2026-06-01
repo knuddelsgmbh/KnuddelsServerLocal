@@ -103,3 +103,17 @@ th { color: var(--muted); font-weight: 600; font-size: 11px; text-transform: upp
 
 .kv-table input { background: transparent; border: 1px dashed var(--border); }
 .kv-table input:focus { border: 1px solid var(--accent); outline: none; }
+
+.modal-backdrop {
+  position: fixed; inset: 0; background: rgba(0, 0, 0, 0.55);
+  display: flex; align-items: flex-start; justify-content: center;
+  padding: 32px 16px; z-index: 100; overflow: auto;
+}
+.modal {
+  width: min(720px, 100%); max-height: calc(100vh - 64px); overflow: auto;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+  padding: 16px;
+}
+.modal h4 { margin: 14px 0 6px; font-size: 12px; text-transform: uppercase; color: var(--muted); letter-spacing: 0.06em; }
+.grid2 { display: grid; gap: 8px 12px; grid-template-columns: 1fr 1fr; }
+.field { display: flex; flex-direction: column; gap: 3px; }

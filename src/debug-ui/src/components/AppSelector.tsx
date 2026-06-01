@@ -11,6 +11,11 @@ export function AppSelector() {
     if (!r.ok) alert(await r.text());
   }
 
+  async function restartApp(appId: string) {
+    const r = await fetch(`/api/debug/app/${encodeURIComponent(appId)}/restart`, { method: 'POST' });
+    if (!r.ok) alert(await r.text());
+  }
+
   return (
     <div>
       <h2>Geladene Apps</h2>
@@ -38,6 +43,9 @@ export function AppSelector() {
               <div style={{ fontWeight: 600 }}>{a.appId}</div>
               <div className="small muted">{a.sessions.length} Session(s)</div>
             </button>
+            <button title="App neu starten"
+                    onClick={() => restartApp(a.appId)}
+                    style={{ padding: '2px 8px', fontSize: 14 }}>↻</button>
             <button title="App löschen"
                     onClick={() => deleteApp(a.appId)}
                     style={{ padding: '2px 8px', fontSize: 14 }}>×</button>

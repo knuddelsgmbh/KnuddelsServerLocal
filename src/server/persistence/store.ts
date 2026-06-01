@@ -13,11 +13,23 @@ export class PersistenceStore {
   private data: AppData = {};
   private filePath: string;
   private writeQueued = false;
+  /**
+   * Optional change hook fired AFTER each mutation. Receives the full scoped
+   * key, the prior slot (or null), and the new slot (or null on delete).
+   * Used by the API layer to drive Toplist rank/label-change listeners.
+   */
+  onChange?: (key: string, oldSlot: Slot | null, newSlot: Slot | null) => void;
 
   constructor(public readonly appId: string) {
     fs.mkdirSync(PERSISTENCE_DIR, { recursive: true });
     this.filePath = path.join(PERSISTENCE_DIR, `${appId}.json`);
     this.load();
+  }
+
+  private notify(key: string, oldSlot: Slot | undefined, newSlot: Slot | undefined): void {
+    if (!this.onChange) return;
+    try { this.onChange(key, oldSlot ?? null, newSlot ?? null); }
+    catch (err) { console.error(`[persistence] onChange threw for ${key}:`, err); }
   }
 
   private load(): void {
@@ -68,16 +80,21 @@ export class PersistenceStore {
     return slot?.kind === 'number' ? slot.value : def;
   }
   setNumber(scopedKey: string, value: number): void {
-    this.data[scopedKey] = { kind: 'number', value };
+    const old = this.data[scopedKey];
+    const slot: Slot = { kind: 'number', value };
+    this.data[scopedKey] = slot;
     this.scheduleWrite();
+    this.notify(scopedKey, old, slot);
   }
   hasNumber(scopedKey: string): boolean {
     return this.data[scopedKey]?.kind === 'number';
   }
   deleteNumber(scopedKey: string): void {
     if (this.hasNumber(scopedKey)) {
+      const old = this.data[scopedKey];
       delete this.data[scopedKey];
       this.scheduleWrite();
+      this.notify(scopedKey, old, undefined);
     }
   }
   addNumber(scopedKey: string, value: number): number {
@@ -150,13 +167,16 @@ export class PersistenceStore {
   deleteAllForUser(userId: number, kind?: Slot['kind']): number {
     const prefix = `user:${userId}:`;
     let count = 0;
+    const removed: { key: string; old: Slot }[] = [];
     for (const key of Object.keys(this.data)) {
       if (!key.startsWith(prefix)) continue;
       if (kind && this.data[key]?.kind !== kind) continue;
+      removed.push({ key, old: this.data[key]! });
       delete this.data[key];
       count++;
     }
     if (count) this.scheduleWrite();
+    for (const r of removed) this.notify(r.key, r.old, undefined);
     return count;
   }
 
@@ -215,12 +235,16 @@ export class PersistenceStore {
     return { ...this.data };
   }
   setRaw(key: string, slot: Slot): void {
+    const old = this.data[key];
     this.data[key] = slot;
     this.scheduleWrite();
+    this.notify(key, old, slot);
   }
   deleteRaw(key: string): void {
+    const old = this.data[key];
     delete this.data[key];
     this.scheduleWrite();
+    if (old) this.notify(key, old, undefined);
   }
 }
 

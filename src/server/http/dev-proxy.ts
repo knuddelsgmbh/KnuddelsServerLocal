@@ -95,7 +95,11 @@ function injectShim(html: string, req: Request, appId: string, rec: AppRecord): 
     appId,
     nick: sim?.nick ?? 'Unknown',
     pageData: (spec?.pageData as Record<string, unknown>) ?? {},
+    appViewMode: spec?.appViewMode ?? 'Popup',
+    cacheInvalidationId: `${appId}-${world.getFrontendVersion(appId)}`,
     wsUrl: `ws://${req.headers.host}/__ws?channel=iframe&sessionId=${encodeURIComponent(sessionId)}`,
+    clientType: sim?.clientType ?? 'Web',
+    isK3Client: sim?.isK3Client ?? true,
   });
   const tag = `<script>${shim}</script>`;
 

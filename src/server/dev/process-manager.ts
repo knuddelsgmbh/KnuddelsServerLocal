@@ -61,6 +61,7 @@ export function startLiveSource(t: HotReloadTarget): void {
     void waitForPort(t.devPort, m).then(up => {
       if (up && managed.has(t.appId)) {
         log(t.appId, 'info', `[live-source] dev server ready on :${t.devPort}`);
+        world.bumpFrontendVersion(t.appId);
         world.emit('frontend-changed', t.appId);
       }
     });

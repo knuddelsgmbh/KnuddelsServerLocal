@@ -1,6 +1,6 @@
 import { WebSocketServer, WebSocket } from 'ws';
 import type { IncomingMessage } from 'node:http';
-import { world, AppRecord } from '../state/world.js';
+import { world, AppRecord, AppContentSpec } from '../state/world.js';
 
 type Channel = 'debug' | 'iframe';
 
@@ -76,6 +76,10 @@ export function attachWsServer(server: any): void {
     broadcastDebug({ type: 'app-content-shown', payload: spec });
     broadcastDebug({ type: 'snapshot', payload: world.snapshot() });
   });
+  world.on('app-content-updated', spec => {
+    broadcastDebug({ type: 'app-content-updated', payload: spec });
+    broadcastDebug({ type: 'snapshot', payload: world.snapshot() });
+  });
   world.on('app-content-removed', ({ sessionId }) => {
     broadcastDebug({ type: 'app-content-removed', payload: { sessionId } });
     broadcastDebug({ type: 'snapshot', payload: world.snapshot() });
@@ -129,9 +133,45 @@ function handleIframeMessage(sessionId: string, msg: any): void {
     handleSlashCommand(appRec.appId, userId, msg.command);
   } else if (msg.kind === 'close') {
     world.appContentRemoved(sessionId);
+  } else if (msg.kind === 'host-frame') {
+    applyHostFrameOp(sessionId, msg);
   } else if (msg.type === '__hello') {
     // ack
   }
+}
+
+function applyHostFrameOp(sessionId: string, msg: any): void {
+  const patch: Partial<AppContentSpec> = {};
+  switch (msg.op) {
+    case 'setSize':
+      patch.width = Number(msg.width);
+      patch.height = Number(msg.height);
+      break;
+    case 'setMinSize':
+      patch.minWidth = Number(msg.width);
+      patch.minHeight = Number(msg.height);
+      break;
+    case 'setMaxSize':
+      patch.maxWidth = Number(msg.width);
+      patch.maxHeight = Number(msg.height);
+      break;
+    case 'setResizable':
+      patch.resizable = !!msg.resizable;
+      break;
+    case 'setBackgroundColor':
+      patch.backgroundColor = String(msg.color);
+      patch.backgroundColorTransitionMs = Number(msg.durationMs) || 0;
+      break;
+    case 'setIcons':
+      patch.iconUrl = String(msg.url);
+      break;
+    case 'setTitle':
+      patch.title = String(msg.title);
+      break;
+    default:
+      return;
+  }
+  world.updateAppContentSpec(sessionId, patch);
 }
 
 function sessionRefFor(appRec: AppRecord, sessionId: string): any {
