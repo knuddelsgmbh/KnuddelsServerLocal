@@ -4,6 +4,7 @@ import * as path from 'node:path';
 import { AppRecord, world } from '../state/world.js';
 import { buildApi } from '../api/index.js';
 import { installKnuddelsStringExtensionsInContext } from './string-extensions.js';
+import { createSafeTimer } from './schedule-timeout.js';
 
 export type LoadedApp = {
   rec: AppRecord;
@@ -27,10 +28,19 @@ export function loadApp(appRec: AppRecord): LoadedApp {
       }
     });
 
+  // UserApps may schedule days/weeks ahead (tournaments, seasons, …). Node only
+  // accepts delays up to ~24.8 days — chunk longer waits before hitting native timers.
+  const scheduleTimeout = createSafeTimer(
+    (handler, delay, ...args) => setTimeout(handler, delay as number, ...(args as [])),
+  );
+  const scheduleInterval = createSafeTimer(
+    (handler, delay, ...args) => setInterval(handler, delay as number, ...(args as [])),
+  );
+
   const safeSetTimeout = (cb: (...a: any[]) => void, delay?: number, ...rest: any[]) =>
-    setTimeout(guard(cb, 'setTimeout callback'), delay, ...rest);
+    scheduleTimeout(guard(cb, 'setTimeout callback'), delay, ...rest);
   const safeSetInterval = (cb: (...a: any[]) => void, delay?: number, ...rest: any[]) =>
-    setInterval(guard(cb, 'setInterval callback'), delay, ...rest);
+    scheduleInterval(guard(cb, 'setInterval callback'), delay, ...rest);
   const safeQueueMicrotask = (cb: () => void) =>
     queueMicrotask(guard(cb, 'queueMicrotask callback'));
 
