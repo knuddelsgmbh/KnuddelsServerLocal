@@ -7,6 +7,26 @@ import * as path from 'node:path';
 import * as fs from 'node:fs';
 import { world, AppRecord, AppContentSpec, SimUser } from '../state/world.js';
 
+// Standard Knuddel-Shop packages (amount of Knuddel ↔ price in euro-cents).
+// These mirror the real Knuddels knuddel shop so apps that read
+// `KnuddelShopProduct.getOrigKnuddelPayout()` (e.g. Crash, which keys its
+// purchase bonuses on the package amount) behave correctly in the sim.
+const KNUDDEL_SHOP_PACKAGES: { productId: string; amount: number; priceCents: number }[] = [
+  { productId: 'knuddelshop_15',    amount: 15,    priceCents: 99 },
+  { productId: 'knuddelshop_110',   amount: 110,   priceCents: 499 },
+  { productId: 'knuddelshop_240',   amount: 240,   priceCents: 999 },
+  { productId: 'knuddelshop_510',   amount: 510,   priceCents: 1999 },
+  { productId: 'knuddelshop_1400',  amount: 1400,  priceCents: 4999 },
+  { productId: 'knuddelshop_3000',  amount: 3000,  priceCents: 9900 },
+  { productId: 'knuddelshop_6500',  amount: 6500,  priceCents: 19900 },
+  { productId: 'knuddelshop_21000', amount: 21000, priceCents: 49900 },
+  { productId: 'knuddelshop_50000', amount: 50000, priceCents: 99900 },
+];
+
+// How long the simulated "test payment" takes before it auto-completes. Gives
+// the frontend a beat to show its in-progress state, just like a real payment.
+const PAYMENT_TEST_DELAY_MS = 600;
+
 export function buildApi(appRec: AppRecord) {
   const { appId } = appRec;
 
@@ -1374,6 +1394,92 @@ export function buildApi(appRec: AppRecord) {
     catch (e: any) { Logger.error('onUserDiced threw', e?.message ?? e); }
   }
 
+  // ============================== PaymentAccess (Knuddel-Shop) ==============================
+  // A working mock of the knuddel shop + "test payment" flow. `requestKnuddelShops`
+  // hands the app a populated KnuddelShop; `startKnuddelPurchase` simulates a
+  // successful test payment: it credits the bought Knuddel to the user and then
+  // fires the app's `onKnuddelPurchaseSuccess` lifecycle hook — which is where
+  // apps (e.g. Crash) grant their purchase bonuses such as freegames. No real
+  // payment dialog exists in the test-env, so the purchase always succeeds.
+  function makeKnuddelShopProduct(pkg: { productId: string; amount: number; priceCents: number }) {
+    return {
+      getProductId: () => pkg.productId,
+      getOrigKnuddelPayout: () => pkg.amount,
+      getOrigPriceCents: () => pkg.priceCents,
+      getNewKnuddelPayout: () => null,
+      getNewPriceCents: () => null,
+      getHappyHourBonusPercentage: () => null,
+      getLoyaltyPoints: () => 0,
+      getLoyaltyLevelIncrease: () => 0,
+    };
+  }
+  const knuddelShopProducts = KNUDDEL_SHOP_PACKAGES.map(makeKnuddelShopProduct);
+  const knuddelShop = {
+    getShopName: () => 'Knuddel-Shop (Test)',
+    getProducts: () => knuddelShopProducts.slice(),
+  };
+  function findKnuddelShopProduct(productId: any) {
+    if (typeof productId === 'string') {
+      return knuddelShopProducts.find(p => p.getProductId() === productId) ?? null;
+    }
+    const amount = readKnuddelNumber(productId);
+    if (amount != null) {
+      return knuddelShopProducts.find(p => p.getOrigKnuddelPayout() === amount) ?? null;
+    }
+    return null;
+  }
+  function completeKnuddelPurchase(userObj: any, product: any, startTimestamp: number, params: any) {
+    const sim: SimUser | undefined = userObj?.__sim;
+    if (!sim) return;
+    // A knuddel purchase credits the bought Knuddel to the user's account; the
+    // app's bonus payout (freegames etc.) happens on top inside onKnuddelPurchaseSuccess.
+    const payout = product.getNewKnuddelPayout() ?? product.getOrigKnuddelPayout();
+    const before = sim.knuddelAmount;
+    sim.knuddelAmount += payout;
+    world.emitChange();
+    notifyKnuddelAccountChanged(sim, before, sim.knuddelAmount);
+    Logger.info(`[Payment] test purchase complete: ${sim.nick} +${payout} Knuddel (product ${product.getProductId()})`);
+    try {
+      appRec.app?.onKnuddelPurchaseSuccess?.(userObj, startTimestamp, product, !!params?.toBot);
+    } catch (e: any) { Logger.error('onKnuddelPurchaseSuccess threw', e); }
+  }
+  const paymentAccess = {
+    startKnuddelPurchase: (user: any, productId: any, params: any = {}) => {
+      const startTimestamp = Date.now();
+      const userObj = user && typeof user.getUserId === 'function' ? user : null;
+      const product = findKnuddelShopProduct(productId);
+      if (!userObj || !product) {
+        Logger.warn(`[Payment] startKnuddelPurchase failed — ${!userObj ? 'no user' : `unknown product ${String(productId)}`}`);
+        if (userObj) {
+          setTimeout(() => {
+            try { appRec.app?.onKnuddelPurchaseFailed?.(userObj, startTimestamp, 'Unbekanntes Produkt im Test-Shop'); }
+            catch (e: any) { Logger.error('onKnuddelPurchaseFailed threw', e); }
+          }, 0);
+        }
+        return;
+      }
+      Logger.info(`[Payment] test purchase started: ${userObj.getNick()} → ${product.getProductId()} (${product.getOrigKnuddelPayout()} Knuddel for ${(product.getOrigPriceCents() / 100).toFixed(2)} €)`);
+      setTimeout(() => completeKnuddelPurchase(userObj, product, startTimestamp, params), PAYMENT_TEST_DELAY_MS);
+    },
+    requestKnuddelShops: (user: any, callback: any) => {
+      try { callback?.(user, 0, [knuddelShop], 'OK'); }
+      catch (e: any) { Logger.error('requestKnuddelShops callback threw', e); }
+    },
+    openKnuddelShop: (_user: any, _transferReason?: string) => {
+      Logger.info('[Payment] openKnuddelShop — no native shop UI in test-env (use the app shop UI instead)');
+    },
+    requestLoyaltyDetails: (user: any, callback: any) => {
+      try {
+        callback?.(user, {
+          getEndangeredPoints: () => 0,
+          getNextDeductionTimestamp: () => 0,
+          getPoints: () => 0,
+          getLevels: () => [],
+        });
+      } catch (e: any) { Logger.error('requestLoyaltyDetails callback threw', e); }
+    },
+  };
+
   // ============================== KnuddelsServer namespace ==============================
   const KnuddelsServer = {
     getChannel: () => channel,
@@ -1386,17 +1492,7 @@ export function buildApi(appRec: AppRecord) {
     getAppServerInfo: () => appServerInfo,
     getChatServerInfo: () => chatServerInfo,
     getExternalServerAccess: () => externalServerAccess,
-    getPaymentAccess: () => ({
-      startKnuddelPurchase: () => {},
-      requestKnuddelShops: (_u: any, cb: any) => cb(_u, 0, [], 'OK'),
-      openKnuddelShop: () => {},
-      requestLoyaltyDetails: (_u: any, cb: any) => cb(_u, {
-        getEndangeredPoints: () => 0,
-        getNextDeductionTimestamp: () => 0,
-        getPoints: () => 0,
-        getLevels: () => [],
-      }),
-    }),
+    getPaymentAccess: () => paymentAccess,
     getWebHookAccess: () => webHookAccess,
     getToplistAccess: () => toplistAccess,
     getFullImagePath: (img: string) => `/app/${appId}/${img}`,

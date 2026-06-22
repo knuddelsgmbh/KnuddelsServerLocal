@@ -3,6 +3,13 @@ import type { AppContentSpec } from '../store.js';
 import { useStore } from '../store.js';
 import { postJson } from '../api/http.js';
 
+// Default frame resolution for every session. Both axes are freely resizable
+// via the corner drag handle so responsive behavior can be exercised — there
+// is intentionally no min-width / fixed-height coming from the app spec.
+const DEFAULT_FRAME_WIDTH = 756;
+const DEFAULT_FRAME_HEIGHT = 476;
+const MIN_FRAME_SIZE = 120;
+
 export function AppContentFrame({ spec }: { spec: AppContentSpec }) {
   const ref = useRef<HTMLIFrameElement>(null);
   const version = useStore(s => s.frontendVersion[spec.appId] ?? 0);
@@ -10,6 +17,32 @@ export function AppContentFrame({ spec }: { spec: AppContentSpec }) {
   const app = useStore(s => s.snapshot.apps.find(a => a.appId === spec.appId));
   const [reloadKey, setReloadKey] = useState(0);
   const [liveBusy, setLiveBusy] = useState(false);
+  const [size, setSize] = useState({ width: DEFAULT_FRAME_WIDTH, height: DEFAULT_FRAME_HEIGHT });
+  const [dragging, setDragging] = useState(false);
+  const dragRef = useRef<{ startX: number; startY: number; startW: number; startH: number } | null>(null);
+
+  function onResizeStart(e: React.PointerEvent) {
+    e.preventDefault();
+    dragRef.current = { startX: e.clientX, startY: e.clientY, startW: size.width, startH: size.height };
+    setDragging(true);
+    (e.target as Element).setPointerCapture(e.pointerId);
+  }
+  function onResizeMove(e: React.PointerEvent) {
+    const d = dragRef.current;
+    if (!d) return;
+    setSize({
+      width: Math.max(MIN_FRAME_SIZE, Math.round(d.startW + (e.clientX - d.startX))),
+      height: Math.max(MIN_FRAME_SIZE, Math.round(d.startH + (e.clientY - d.startY))),
+    });
+  }
+  function onResizeEnd(e: React.PointerEvent) {
+    dragRef.current = null;
+    setDragging(false);
+    try { (e.target as Element).releasePointerCapture(e.pointerId); } catch { /* noop */ }
+  }
+  function resetSize() {
+    setSize({ width: DEFAULT_FRAME_WIDTH, height: DEFAULT_FRAME_HEIGHT });
+  }
 
   const liveSource = app?.liveSource ?? false;
   const liveAvailable = app?.liveSourceAvailable ?? false;
@@ -50,16 +83,12 @@ export function AppContentFrame({ spec }: { spec: AppContentSpec }) {
     + `&v=${reloadKey}`;
   const userNick = users.find(u => u.userId === spec.userId)?.nick ?? `#${spec.userId}`;
 
-  // Headerbar/Global modes always span the container width — only height is honored
-  // from `setSize`. Popup/Overlay honor both width and height.
-  const isFullWidth = spec.appViewMode === 'Headerbar' || spec.appViewMode === 'Global';
-  const iframeStyle: React.CSSProperties = {
-    width: isFullWidth ? '100%' : (spec.width || '100%'),
-    height: spec.height || 480,
-    minWidth: !isFullWidth ? spec.minWidth : undefined,
-    minHeight: spec.minHeight,
-    maxWidth: !isFullWidth ? spec.maxWidth : undefined,
-    maxHeight: spec.maxHeight,
+  // The frame is freely resizable on both axes (default 756x476). We deliberately
+  // ignore the app's min/fixed sizing here so responsive behavior can be tested
+  // by dragging the corner handle.
+  const frameStyle: React.CSSProperties = {
+    width: size.width,
+    height: size.height,
     background: spec.backgroundColor,
     transition: spec.backgroundColorTransitionMs
       ? `background-color ${spec.backgroundColorTransitionMs}ms`
@@ -79,6 +108,12 @@ export function AppContentFrame({ spec }: { spec: AppContentSpec }) {
           {spec.title ? <> {' · '}<em>{spec.title}</em></> : null}
         </span>
         <span className="row">
+          <button
+            className="size-reset"
+            onClick={resetSize}
+            title={`Auf Standardgröße zurücksetzen (${DEFAULT_FRAME_WIDTH}×${DEFAULT_FRAME_HEIGHT})`}>
+            {size.width}×{size.height}
+          </button>
           <button
             className={`live-toggle ${liveSource ? 'on' : 'off'}`}
             disabled={!liveAvailable || liveBusy}
@@ -115,11 +150,19 @@ export function AppContentFrame({ spec }: { spec: AppContentSpec }) {
           </span>
         </div>
       )}
-      <iframe ref={ref}
-              key={reloadKey}
-              src={url}
-              style={iframeStyle}
-              title={titleLabel} />
+      <div className="frame-viewport" style={frameStyle}>
+        <iframe ref={ref}
+                key={reloadKey}
+                src={url}
+                style={{ pointerEvents: dragging ? 'none' : 'auto' }}
+                title={titleLabel} />
+        <div
+          className={`resize-dot ${dragging ? 'dragging' : ''}`}
+          onPointerDown={onResizeStart}
+          onPointerMove={onResizeMove}
+          onPointerUp={onResizeEnd}
+          title="Ziehen, um Breite & Höhe anzupassen" />
+      </div>
     </div>
   );
 }

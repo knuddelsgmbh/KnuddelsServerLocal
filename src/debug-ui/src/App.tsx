@@ -100,7 +100,7 @@ function AppsTab() {
         {selected.sessions.length === 0 && (
           <p className="muted small">Keine offenen AppContent-Sessions. Trigger ein <code>user.sendAppContent(...)</code> aus der App heraus.</p>
         )}
-        <div className="grid" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(420px, 1fr))' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12, alignItems: 'flex-start' }}>
           {selected.sessions.map(s => <AppContentFrame key={s.sessionId} spec={s} />)}
         </div>
       </div>
